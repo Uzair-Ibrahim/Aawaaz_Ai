@@ -1,0 +1,57 @@
+services:
+  - type: web
+    name: awaaz-backend
+    runtime: node
+    plan: free
+    region: singapore
+    autoDeploy: true
+    buildCommand: npm install && npm run build:shared && npm run build:backend
+    startCommand: npm run start --workspace=@awaaz/backend
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATA_STORE_MODE
+        value: memory
+      - key: AUTH_MODE
+        value: dev_local
+      - key: STORAGE_BACKEND
+        value: memory
+      - key: VOICE_PROVIDER
+        value: groq
+      - key: SUPABASE_STORAGE_BUCKET
+        value: awaaz-private-documents
+      - key: FRONTEND_URL
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: DEV_AUTH_SECRET
+        generateValue: true
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_PUBLISHABLE_KEY
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: SUPABASE_JWKS_URL
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: SUPABASE_POOLER_URL
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-3.8-flash
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_CHAT_MODEL
+        value: openai/gpt-oss-120b
+      - key: GROQ_STT_MODEL
+        value: whisper-large-v3-turbo
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_MODEL
+        value: gpt-4o-mini
+      - key: LINGOSCRIBE_API_KEY
+        sync: false

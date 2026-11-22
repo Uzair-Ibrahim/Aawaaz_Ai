@@ -91,10 +91,11 @@ export function createSaasRouter(deps: {
   const { env, store, authService, requireAuth, audit, notifications, moduleRegistry, supabaseRuntime } = deps;
 
   const setSessionCookie = (res: Response, token: string): void => {
+    const isProd = env.NODE_ENV === 'production';
     res.cookie(SESSION_COOKIE_NAME, token, {
       httpOnly: true,
-      sameSite: 'lax',
-      secure: env.NODE_ENV === 'production',
+      sameSite: isProd ? 'none' : 'lax',
+      secure: isProd,
       maxAge: 12 * 60 * 60 * 1000,
     });
   };
@@ -190,7 +191,12 @@ export function createSaasRouter(deps: {
   });
 
   router.post('/auth/logout', (_req, res) => {
-    res.clearCookie(SESSION_COOKIE_NAME);
+    const isProd = env.NODE_ENV === 'production';
+    res.clearCookie(SESSION_COOKIE_NAME, {
+      httpOnly: true,
+      sameSite: isProd ? 'none' : 'lax',
+      secure: isProd,
+    });
     res.json({ logged_out: true });
   });
 

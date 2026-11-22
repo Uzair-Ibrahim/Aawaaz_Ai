@@ -1,5 +1,20 @@
-export const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/+$/, '') || 'http://localhost:4000/api/v1';
+function normalizeApiBaseUrl(raw?: string): string {
+  const cleaned = (raw || 'http://localhost:4000/api/v1').trim().replace(/\/+$/, '');
+  if (/\/api\/v1$/i.test(cleaned)) {
+    return cleaned;
+  }
+  return `${cleaned}/api/v1`;
+}
+
+export const API_BASE_URL = normalizeApiBaseUrl(
+  process.env.NEXT_PUBLIC_API_URL || process.env.NEXT_PUBLIC_API_BASE_URL,
+);
+
+export const API_ORIGIN_URL = API_BASE_URL.replace(/\/api\/v1$/i, '');
+
+export const API_WS_URL = API_BASE_URL.replace(/^http/i, (scheme) =>
+  scheme.toLowerCase() === 'https' ? 'wss' : 'ws',
+);
 
 export class ApiClientError extends Error {
   public readonly status: number;

@@ -77,7 +77,27 @@ export function createApp(overrides: AppDependencies = {}): {
   const app = express();
   app.set('trust proxy', 1);
 
-  const allowedOrigins = env.CORS_ORIGIN.split(',').map((o) => o.trim()).filter(Boolean);
+  const normalizeOrigin = (value: string): string => value.trim().replace(/\/+$/, '');
+  const allowedOrigins = new Set<string>(
+    [
+      'http://localhost:3000',
+      'http://127.0.0.1:3000',
+      env.APP_URL,
+      env.FRONTEND_URL,
+      ...env.CORS_ORIGIN.split(','),
+      ...env.ALLOWED_ORIGINS.split(','),
+    ]
+      .map(normalizeOrigin)
+      .filter(Boolean),
+  );
+  const isVercelOrigin = (origin: string): boolean =>
+    /^https:\/\/[a-z0-9-]+(?:\.[a-z0-9-]+)*\.vercel\.app$/i.test(origin);
+  const isAllowedOrigin = (origin: string | undefined): boolean => {
+    if (!origin) return true;
+    const normalized = normalizeOrigin(origin);
+    return allowedOrigins.has(normalized) || isVercelOrigin(normalized);
+  };
+
   app.use(
     helmet({
       crossOriginResourcePolicy: { policy: 'cross-origin' },
@@ -86,24 +106,37 @@ export function createApp(overrides: AppDependencies = {}): {
   app.use(
     cors({
       origin: (origin, cb) => {
-        if (!origin || allowedOrigins.includes(origin)) {
+        if (isAllowedOrigin(origin)) {
           cb(null, true);
         } else {
           cb(null, false);
         }
       },
       credentials: true,
+      methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+      allowedHeaders: ['Authorization', 'Content-Type', 'X-Organization-Id', 'x-tenant-id', 'X-Requested-With'],
     }),
   );
   app.use(cookieParser());
   app.use(express.json({ limit: '1mb' }));
   app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
+  // Fast unthrottled root health check for Render / cloud load balancers
+  app.get('/health', (_req, res) => {
+    const sbHealth = supabaseRuntime.getHealthSnapshot();
+    res.status(200).json({
+      status: 'ok',
+      service: 'awaaz-backend',
+      storage: sbHealth.storage,
+      database: sbHealth.database,
+    });
+  });
+
   // Basic origin check for state-changing cookie-authenticated requests (CSRF defense-in-depth)
   app.use('/api/v1', (req, res, next) => {
     if (['POST', 'PATCH', 'PUT', 'DELETE'].includes(req.method) && !req.headers.authorization) {
       const origin = req.headers.origin;
-      if (origin && !allowedOrigins.includes(origin)) {
+      if (origin && !isAllowedOrigin(origin)) {
         res.status(403).json({
           error: {
             code: 'CSRF_ORIGIN_MISMATCH',
