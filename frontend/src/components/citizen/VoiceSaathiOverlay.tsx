@@ -87,6 +87,11 @@ export function VoiceSaathiOverlay({
     manualText,
     setManualText,
     agentReply,
+    autoplayBlocked,
+    playBlockedAudio,
+    voiceError,
+    retryLastTurn,
+    clearVoiceError,
     formState,
     authDraft,
     fieldFillHistory,
@@ -592,6 +597,72 @@ export function VoiceSaathiOverlay({
             </div>
           </div>
 
+          {/* Autoplay Blocked Prominent Banner (Fix 3.2) */}
+          {autoplayBlocked && (
+            <div
+              data-testid="autoplay-blocked-banner"
+              className="w-full p-3.5 rounded-2xl bg-amber-500/25 border-2 border-amber-300 text-amber-50 space-y-2 shadow-lg"
+            >
+              <div className="text-xs font-bold text-amber-100">
+                {detectedLang === 'en'
+                  ? 'Browser blocked automatic voice playback.'
+                  : 'براؤزر نے خودکار آواز روک دی ہے۔ سننے کے لیے نیچے بٹن دبائیں:'}
+              </div>
+              <button
+                type="button"
+                data-testid="autoplay-play-btn"
+                onClick={() => void playBlockedAudio()}
+                className="w-full py-2.5 px-4 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-extrabold text-xs sm:text-sm inline-flex items-center justify-center gap-2 shadow-md transition cursor-pointer"
+              >
+                <Volume2 className="h-4 w-4 shrink-0" />
+                <span>
+                  {detectedLang === 'en'
+                    ? 'Tap to Play Agent Voice'
+                    : 'آواز سننے کے لیے ٹچ کریں • Tap to Play Agent Voice'}
+                </span>
+              </button>
+            </div>
+          )}
+
+          {/* Visible High-Contrast Voice Error Banner with 1-Tap Retry (Fix 3.1) */}
+          {voiceError && (
+            <div
+              data-testid="voice-error-banner"
+              role="alert"
+              className="w-full p-3.5 rounded-2xl bg-rose-950/95 border-2 border-rose-400 text-rose-50 text-xs text-start space-y-2.5 shadow-lg"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="font-extrabold text-rose-200 flex items-center gap-1.5">
+                  <AlertTriangle className="h-4 w-4 text-rose-300 shrink-0" />
+                  <span>{voiceError.message}</span>
+                </div>
+                <button
+                  type="button"
+                  data-testid="voice-error-dismiss-btn"
+                  onClick={() => clearVoiceError()}
+                  className="text-rose-300 hover:text-white font-extrabold px-1.5 cursor-pointer"
+                  aria-label="Dismiss error"
+                >
+                  ✕
+                </button>
+              </div>
+              <p className="text-rose-200/90 leading-relaxed">{voiceError.hint}</p>
+              <div className="flex items-center gap-2 pt-0.5">
+                <button
+                  type="button"
+                  data-testid="voice-retry-btn"
+                  onClick={() => void retryLastTurn()}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-extrabold text-xs shadow-sm transition cursor-pointer"
+                >
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  <span>
+                    {detectedLang === 'en' ? 'Retry' : 'دوبارہ کوشش کریں • Retry'}
+                  </span>
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Last User Utterance & Agent Reply */}
           <div className="w-full min-w-0 space-y-2">
             {lastTranscript && (
@@ -604,15 +675,17 @@ export function VoiceSaathiOverlay({
             )}
             <div className="p-3.5 rounded-2xl bg-blue-900/55 border border-blue-500/50 text-sm sm:text-base font-semibold text-blue-50 leading-relaxed space-y-2 break-words">
               <p data-testid="voice-agent-reply" className="break-words">{agentReply}</p>
-              <button
-                type="button"
-                data-testid="voice-replay-btn"
-                onClick={() => void replayCurrentReply()}
-                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-blue-800/90 hover:bg-blue-700 text-xs font-bold text-sky-100 border border-sky-400/40 cursor-pointer"
-              >
-                <Volume2 className="h-3.5 w-3.5" />
-                <span>{va.replayVoice}</span>
-              </button>
+              {agentReply && (
+                <button
+                  type="button"
+                  data-testid="voice-replay-btn"
+                  onClick={() => void replayCurrentReply()}
+                  className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-blue-800/90 hover:bg-blue-700 text-xs font-bold text-sky-100 border border-sky-400/40 cursor-pointer"
+                >
+                  <Volume2 className="h-3.5 w-3.5" />
+                  <span>{va.replayVoice}</span>
+                </button>
+              )}
             </div>
           </div>
 

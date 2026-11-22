@@ -133,6 +133,105 @@ export interface VoiceSessionTurnResult {
   policy_answer?: {
     answer?: string;
   };
+  empty_transcription?: boolean;
+  no_state_change?: boolean;
+  auth_cleared?: boolean;
+}
+
+export interface VoiceErrorState {
+  message: string;
+  hint: string;
+  code?: string;
+}
+
+function getAudioFilenameForMime(mimeType: string): string {
+  const lower = (mimeType || '').toLowerCase();
+  if (lower.includes('mp4') || lower.includes('m4a')) return 'utterance.mp4';
+  if (lower.includes('ogg')) return 'utterance.ogg';
+  if (lower.includes('wav')) return 'utterance.wav';
+  if (lower.includes('mpeg') || lower.includes('mp3')) return 'utterance.mp3';
+  return 'utterance.webm';
+}
+
+function getLocalizedVoiceError(lang: LanguageCode, detail?: string, code?: string): VoiceErrorState {
+  const isNetwork = code === 'NETWORK_ERROR' || code === 'TIMEOUT';
+  if (lang === 'en') {
+    return {
+      message: isNetwork
+        ? 'Could not reach the voice assistant server. Please check your connection.'
+        : detail || 'Voice request could not be completed right now.',
+      hint: 'Check your microphone or internet connection and tap Retry, or type below.',
+      code,
+    };
+  }
+  if (lang === 'sd') {
+    return {
+      message: isNetwork
+        ? 'آواز ساٿي سرور سان رابطو نه ٿي سگهيو.'
+        : detail || 'آواز جي درخواست هن وقت مڪمل نه ٿي سگهي.',
+      hint: 'مهرباني ڪري مائيڪ چيڪ ڪريو ۽ ٻيهر ڪوشش ڪريو، يا هيٺ لکو.',
+      code,
+    };
+  }
+  if (lang === 'pa') {
+    return {
+      message: isNetwork
+        ? 'آواز ساتھی سرور نال رابطہ نہیں ہو سکیا۔'
+        : detail || 'آواز دی درخواست ایس ویلے مکمل نہیں ہو سکی۔',
+      hint: 'مائیک چیک کرو تے دوبارہ کوشش کرو، یا تھلے لکھو۔',
+      code,
+    };
+  }
+  if (lang === 'ps') {
+    return {
+      message: isNetwork
+        ? 'د آواز ملګري سرور سره اړیکه ونه نیول شوه.'
+        : detail || 'د غږ غوښتنه اوس بشپړه نه شوه.',
+      hint: 'مهرباني وکړئ مایک وګورئ او بیا هڅه وکړئ، یا لاندې ولیکئ.',
+      code,
+    };
+  }
+  if (lang === 'bal') {
+    return {
+      message: isNetwork
+        ? 'آواز ساتھی ءِ سرور ءَ گوں رابطہ نہ بوت۔'
+        : detail || 'آواز ءِ درخواست انوں پورا نہ بوت۔',
+      hint: 'مائیک ءَ چیک کن ءُ پدا جھد کن، یا جہل ءَ نبشتہ کن۔',
+      code,
+    };
+  }
+  return {
+    message: isNetwork
+      ? 'آواز ساتھی سرور سے رابطہ نہیں ہو سکا۔ انٹرنیٹ چیک کریں۔'
+      : detail || 'آواز کی درخواست اس وقت مکمل نہیں ہو سکی۔',
+    hint: 'مائیک چیک کریں اور دوبارہ کوشش کریں، یا نیچے لکھ کر بھیجیں۔',
+    code,
+  };
+}
+
+interface BrowserSpeechRecognitionAlternative {
+  transcript: string;
+}
+
+interface BrowserSpeechRecognitionResult {
+  0?: BrowserSpeechRecognitionAlternative;
+  isFinal?: boolean;
+}
+
+interface BrowserSpeechRecognitionEvent {
+  results: ArrayLike<BrowserSpeechRecognitionResult>;
+}
+
+interface BrowserSpeechRecognitionInstance {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onresult: ((ev: BrowserSpeechRecognitionEvent) => void) | null;
+  onerror: (() => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+  abort: () => void;
 }
 
 /**
@@ -267,6 +366,7 @@ function getInitialHomeGreeting(lang: LanguageCode, displayName?: string): strin
 export interface SendTurnPayload {
   audioBlob?: Blob;
   transcript?: string;
+  fallbackTranscript?: string;
   langHint?: LanguageCode;
   languageExplicitSwitch?: boolean;
   stageHint?: AgentWorkflowStage;
@@ -304,6 +404,7 @@ interface VoiceAgentContextValue {
   setManualText: (v: string) => void;
   agentReply: string;
   autoplayBlocked: boolean;
+  voiceError: VoiceErrorState | null;
   formState: VoiceSessionFormState;
   authDraft: AgentAuthDraft;
   fieldFillHistory: string[];
@@ -321,6 +422,9 @@ interface VoiceAgentContextValue {
   applicationsStatus: CitizenApplicationStatusSummary[];
   officerInquiries: OfficerInquiryRecord[];
   sendSessionTurn: (payload: SendTurnPayload) => Promise<void>;
+  retryLastTurn: () => Promise<void>;
+  clearVoiceError: () => void;
+  playBlockedAudio: () => Promise<void>;
   handleActivateTouch: () => Promise<void>;
   interruptAndListen: () => Promise<void>;
   hardStopVoiceAgent: () => void;
@@ -336,7 +440,7 @@ const VoiceAgentContext = createContext<VoiceAgentContextValue | null>(null);
 export function VoiceAgentProvider({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
-  const { user, token, activeOrganizationId, setAuthenticatedSession } = useAuth();
+  const { user, token, activeOrganizationId, setAuthenticatedSession, clearLocalAuthSession } = useAuth();
   const { language, setLanguage } = useI18n();
 
   // PHASE 3: Completely silence & hide Voice Saathi for staff roles (officer, admin, auditor) & staff portals
@@ -372,6 +476,7 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
   const [manualText, setManualText] = useState('');
   const [agentReply, setAgentReply] = useState(() => getInitialHomeGreeting(language, user?.display_name));
   const [autoplayBlocked, setAutoplayBlocked] = useState(false);
+  const [voiceError, setVoiceError] = useState<VoiceErrorState | null>(null);
 
   const [formState, setFormState] = useState<VoiceSessionFormState>(createEmptyFormState);
   const [authDraft, setAuthDraft] = useState<AgentAuthDraft>(createEmptyAuthDraft);
@@ -430,6 +535,17 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
   const bargeInStreamRef = useRef<MediaStream | null>(null);
   const onCaseSubmittedRef = useRef<(() => void) | null>(null);
   const prevUserIdRef = useRef<string | null>(user?.id ?? null);
+  const suppressLogoutResetRef = useRef<boolean>(false);
+  const lastFailedPayloadRef = useRef<SendTurnPayload | null>(null);
+  const pendingBlockedAudioRef = useRef<{
+    text: string;
+    lang: LanguageCode;
+    base64Audio: string | null;
+    mimeType: string | null;
+    onEnded: () => void;
+  } | null>(null);
+  const speechRecognitionRef = useRef<BrowserSpeechRecognitionInstance | null>(null);
+  const browserTranscriptRef = useRef<string>('');
 
   const updateOrbState = useCallback((next: VoiceAgentState) => {
     orbStateRef.current = next;
@@ -537,11 +653,39 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
     stopBargeInMonitor();
   }, [stopBargeInMonitor]);
 
+  const stopCompanionSpeechRecognition = useCallback(() => {
+    if (speechRecognitionRef.current) {
+      const rec = speechRecognitionRef.current;
+      speechRecognitionRef.current = null;
+      rec.onresult = null;
+      rec.onerror = null;
+      rec.onend = null;
+      try {
+        rec.stop();
+      } catch {
+        // Ignore stop errors
+      }
+      try {
+        rec.abort();
+      } catch {
+        // Ignore abort errors
+      }
+    }
+  }, []);
+
+  const clearStaleLocalAuth = useCallback(() => {
+    suppressLogoutResetRef.current = true;
+    tokenRef.current = null;
+    orgIdRef.current = null;
+    clearLocalAuthSession();
+  }, [clearLocalAuthSession]);
+
   const hardMuteAndStopMic = useCallback(() => {
     if (rearmTimerRef.current) {
       clearTimeout(rearmTimerRef.current);
       rearmTimerRef.current = null;
     }
+    stopCompanionSpeechRecognition();
     if (recorderRef.current && recorderRef.current.state !== 'inactive') {
       try {
         recorderRef.current.ondataavailable = null;
@@ -556,7 +700,7 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
     recorderRef.current = null;
     stopVadLoop();
     stopBargeInMonitor();
-  }, [stopVadLoop, stopBargeInMonitor]);
+  }, [stopCompanionSpeechRecognition, stopVadLoop, stopBargeInMonitor]);
 
   /**
    * PHASE 1 & 2: HARD STOP / COMPLETE STANDBY (`IDLE_STOPPED`).
@@ -782,6 +926,7 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
             updateOrbState('IDLE_STOPPED');
             return false;
           }
+          pendingBlockedAudioRef.current = null;
           setAutoplayBlocked(false);
           return true;
         } catch (err) {
@@ -791,6 +936,7 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
               clearTimeout(ttsWatchdogTimerRef.current);
               ttsWatchdogTimerRef.current = null;
             }
+            pendingBlockedAudioRef.current = { text, lang, base64Audio, mimeType, onEnded };
             setAutoplayBlocked(true);
             agentSpeakingRef.current = false;
             stopBargeInMonitor();
@@ -804,16 +950,32 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
         const speakAbort = new AbortController();
         activeAbortControllerRef.current = speakAbort;
         try {
-          const res = await fetch(`${API_BASE_URL}/voice/speak`, {
+          const buildSpeakHeaders = (includeAuth: boolean): Record<string, string> => ({
+            'Content-Type': 'application/json',
+            ...(includeAuth && tokenRef.current ? { Authorization: `Bearer ${tokenRef.current}` } : {}),
+            ...(includeAuth && orgIdRef.current ? { 'X-Organization-Id': orgIdRef.current } : {}),
+          });
+
+          let res = await fetch(`${API_BASE_URL}/voice/speak`, {
             method: 'POST',
             signal: speakAbort.signal,
-            headers: {
-              'Content-Type': 'application/json',
-              ...(tokenRef.current ? { Authorization: `Bearer ${tokenRef.current}` } : {}),
-              ...(orgIdRef.current ? { 'X-Organization-Id': orgIdRef.current } : {}),
-            },
+            credentials: 'include',
+            headers: buildSpeakHeaders(true),
             body: JSON.stringify({ text: text.slice(0, 500), language: lang }),
           });
+          if (res.status === 401 && !userStoppedRef.current && !voiceDisabledRef.current) {
+            clearStaleLocalAuth();
+            res = await fetch(`${API_BASE_URL}/voice/speak`, {
+              method: 'POST',
+              signal: speakAbort.signal,
+              credentials: 'include',
+              headers: buildSpeakHeaders(false),
+              body: JSON.stringify({ text: text.slice(0, 500), language: lang }),
+            });
+          }
+          if (res.headers.get('X-Auth-Cleared') === 'true') {
+            clearStaleLocalAuth();
+          }
           if (userStoppedRef.current || voiceDisabledRef.current) return false;
           if (res.ok) {
             const blob = await res.blob();
@@ -830,6 +992,7 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
               finishWithCooldown();
             };
             await audio.play();
+            pendingBlockedAudioRef.current = null;
             setAutoplayBlocked(false);
             return true;
           }
@@ -838,6 +1001,7 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
             return false;
           }
           if (err instanceof Error && err.name === 'NotAllowedError') {
+            pendingBlockedAudioRef.current = { text, lang, base64Audio: null, mimeType: null, onEnded };
             setAutoplayBlocked(true);
             agentSpeakingRef.current = false;
             stopBargeInMonitor();
@@ -871,7 +1035,7 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
         return false;
       }
     },
-    [cancelAllSpeechOutputs, hardMuteAndStopMic, startBargeInMonitor, stopBargeInMonitor, updateOrbState],
+    [cancelAllSpeechOutputs, clearStaleLocalAuth, hardMuteAndStopMic, startBargeInMonitor, stopBargeInMonitor, updateOrbState],
   );
 
   const speakAndMaybeReopenMic = useCallback(
@@ -933,9 +1097,10 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
         return;
       }
 
-      // Explicit user turn (voice / text / button click) clears standby lock
+      // Explicit user turn (voice / text / button click) clears standby lock and any previous error banner
       if (!isSilentLangSync) {
         userStoppedRef.current = false;
+        setVoiceError(null);
       }
 
       inFlightRef.current = true;
@@ -947,45 +1112,52 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
       activeAbortControllerRef.current = controller;
 
       try {
-        let res: Response;
-        const activeToken = tokenRef.current;
-        const activeOrg = orgIdRef.current;
-        const headers: Record<string, string> = {
-          ...(activeToken ? { Authorization: `Bearer ${activeToken}` } : {}),
-          ...(activeOrg ? { 'X-Organization-Id': activeOrg } : {}),
-        };
-
         const activeSid = sessionIdRef.current || undefined;
         const currentFormSnapshot = formStateRef.current;
         const langToSend = payload.langHint ?? detectedLangRef.current;
         const stageToSend = payload.stageHint ?? workflowStageRef.current;
 
-        if (payload.audioBlob) {
-          const form = new FormData();
-          form.append('audio', payload.audioBlob, 'utterance.webm');
-          if (activeSid) form.append('session_id', activeSid);
-          form.append('language', langToSend);
-          form.append('locked_language', detectedLangRef.current);
-          form.append('workflow_stage', stageToSend);
-          form.append('synthesize_audio', 'true');
-          form.append('form_state', JSON.stringify(currentFormSnapshot));
-          res = await fetch(`${API_BASE_URL}/voice/session`, {
+        const executeTurnFetch = async (
+          includeAuth: boolean,
+          overrideTranscript?: string,
+        ): Promise<Response> => {
+          const activeToken = includeAuth ? tokenRef.current : null;
+          const activeOrg = includeAuth ? orgIdRef.current : null;
+          const headers: Record<string, string> = {
+            ...(activeToken ? { Authorization: `Bearer ${activeToken}` } : {}),
+            ...(activeOrg ? { 'X-Organization-Id': activeOrg } : {}),
+          };
+
+          if (payload.audioBlob && overrideTranscript === undefined) {
+            const form = new FormData();
+            const audioFilename = getAudioFilenameForMime(payload.audioBlob.type);
+            form.append('audio', payload.audioBlob, audioFilename);
+            if (activeSid) form.append('session_id', activeSid);
+            form.append('language', langToSend);
+            form.append('locked_language', detectedLangRef.current);
+            form.append('workflow_stage', stageToSend);
+            form.append('synthesize_audio', 'true');
+            form.append('form_state', JSON.stringify(currentFormSnapshot));
+            return await fetch(`${API_BASE_URL}/voice/session`, {
+              method: 'POST',
+              signal: controller.signal,
+              credentials: 'include',
+              headers,
+              body: form,
+            });
+          }
+
+          return await fetch(`${API_BASE_URL}/voice/session`, {
             method: 'POST',
             signal: controller.signal,
-            headers,
-            body: form,
-          });
-        } else {
-          res = await fetch(`${API_BASE_URL}/voice/session`, {
-            method: 'POST',
-            signal: controller.signal,
+            credentials: 'include',
             headers: {
               ...headers,
               'Content-Type': 'application/json',
             },
             body: JSON.stringify({
               session_id: activeSid,
-              transcript: payload.transcript,
+              transcript: overrideTranscript ?? payload.transcript,
               language: langToSend,
               locked_language: detectedLangRef.current,
               language_explicit_switch: Boolean(payload.languageExplicitSwitch),
@@ -997,6 +1169,33 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
               form_state: currentFormSnapshot,
             }),
           });
+        };
+
+        let res = await executeTurnFetch(true);
+
+        // FIX 3.1: If a 401 is ever received, clear stale localStorage auth tokens and automatically retry ONCE unauthenticated!
+        if (res.status === 401 && !userStoppedRef.current && !voiceDisabledRef.current && !controller.signal.aborted) {
+          clearStaleLocalAuth();
+          res = await executeTurnFetch(false);
+        }
+
+        // FIX 2.2: Client-Side Hybrid Web Speech Fallback — if backend audio STT returns 502/503 (or unconfigured)
+        // and we have a live browser Web Speech API transcript, automatically send it as a text turn!
+        if (
+          !res.ok &&
+          payload.audioBlob &&
+          (res.status === 502 || res.status === 503) &&
+          payload.fallbackTranscript &&
+          payload.fallbackTranscript.trim().length >= 2 &&
+          !userStoppedRef.current &&
+          !voiceDisabledRef.current &&
+          !controller.signal.aborted
+        ) {
+          res = await executeTurnFetch(Boolean(tokenRef.current), payload.fallbackTranscript.trim());
+          if (res.status === 401 && !userStoppedRef.current && !voiceDisabledRef.current && !controller.signal.aborted) {
+            clearStaleLocalAuth();
+            res = await executeTurnFetch(false, payload.fallbackTranscript.trim());
+          }
         }
 
         // Guard: if Hard Stop was clicked while request was in-flight, drop silently!
@@ -1007,7 +1206,18 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
         }
 
         if (!res.ok) {
-          throw new Error(`Voice session error (${res.status})`);
+          let errCode = `HTTP_${res.status}`;
+          let errMessage = `Voice session error (${res.status})`;
+          try {
+            const errJson = (await res.json()) as { error?: { code?: string; message?: string } };
+            if (errJson.error?.code) errCode = errJson.error.code;
+            if (errJson.error?.message) errMessage = errJson.error.message;
+          } catch {
+            // Keep default message
+          }
+          const fatalErr = new Error(errMessage) as Error & { code?: string };
+          fatalErr.code = errCode;
+          throw fatalErr;
         }
 
         const data = (await res.json()) as VoiceSessionTurnResult;
@@ -1018,6 +1228,14 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
           return;
         }
 
+        // FIX 1 & 3.1: If backend cleared a stale session token/cookie, clear stale localStorage auth keys silently!
+        if (data.auth_cleared && !data.auth_session?.access_token) {
+          clearStaleLocalAuth();
+        }
+
+        lastFailedPayloadRef.current = null;
+        setVoiceError(null);
+
         if (data.session_id) sessionIdRef.current = data.session_id;
 
         let loggedInAsStaff = false;
@@ -1027,6 +1245,19 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
           prevUserIdRef.current = data.auth_session.user.id;
           loggedInAsStaff = isStaffRole(data.auth_session.user.active_role);
           setAuthenticatedSession(data.auth_session.access_token, data.auth_session.user);
+        }
+
+        // FIX 2.1: If empty_transcription / no_state_change, preserve current form & transcript and politely speak prompt!
+        if (data.empty_transcription && data.no_state_change) {
+          if (data.agent_reply_text) setAgentReply(data.agent_reply_text);
+          if (data.reasoning_steps) setReasoningSteps(data.reasoning_steps);
+          inFlightRef.current = false;
+          await speakAndMaybeReopenMic(
+            data,
+            Boolean(payload.autoReopenMic) || continuousSessionActiveRef.current,
+            false,
+          );
+          return;
         }
 
         if (data.workflow_stage) {
@@ -1158,16 +1389,13 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
           updateOrbState('IDLE_STOPPED');
           return;
         }
-        // Auto-recover into LISTENING if continuous session is still active!
-        if (continuousSessionActiveRef.current && !userStoppedRef.current && !voiceDisabledRef.current) {
-          if (rearmTimerRef.current) clearTimeout(rearmTimerRef.current);
-          rearmTimerRef.current = setTimeout(() => {
-            rearmTimerRef.current = null;
-            if (continuousSessionActiveRef.current && !userStoppedRef.current && !voiceDisabledRef.current) {
-              void startListeningRef.current();
-            }
-          }, 250);
-          return;
+        // FIX 3.1: NEVER silently swallow errors — surface visible localized error banner with 1-tap Retry and recover orbState!
+        if (!isSilentLangSync) {
+          lastFailedPayloadRef.current = payload;
+          const errObj = err as Error & { code?: string };
+          const isNetErr = err instanceof TypeError || /fetch|network|failed to fetch/i.test(errObj?.message ?? '');
+          const code = errObj?.code ?? (isNetErr ? 'NETWORK_ERROR' : 'VOICE_SESSION_ERROR');
+          setVoiceError(getLocalizedVoiceError(detectedLangRef.current, errObj?.message, code));
         }
         updateOrbState('IDLE_STOPPED');
       } finally {
@@ -1177,6 +1405,7 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
       }
     },
     [
+      clearStaleLocalAuth,
       setAuthenticatedSession,
       setLanguage,
       cancelAllSpeechOutputs,
@@ -1188,6 +1417,48 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
       updateOrbState,
     ],
   );
+
+  const clearVoiceError = useCallback(() => {
+    setVoiceError(null);
+  }, []);
+
+  const retryLastTurn = useCallback(async () => {
+    if (voiceDisabledRef.current || inFlightRef.current) return;
+    setVoiceError(null);
+    const pending = lastFailedPayloadRef.current;
+    if (pending) {
+      await sendSessionTurn(pending);
+    } else {
+      await sendSessionTurn({ langHint: detectedLangRef.current, autoReopenMic: true });
+    }
+  }, [sendSessionTurn]);
+
+  const playBlockedAudio = useCallback(async () => {
+    if (voiceDisabledRef.current) return;
+    userStoppedRef.current = false;
+    setAutoplayBlocked(false);
+    const blocked = pendingBlockedAudioRef.current;
+    pendingBlockedAudioRef.current = null;
+    if (blocked) {
+      await playServerOrBrowserSpeech(
+        blocked.text,
+        blocked.lang,
+        blocked.base64Audio,
+        blocked.mimeType,
+        blocked.onEnded,
+        !blocked.base64Audio,
+      );
+    } else {
+      await playServerOrBrowserSpeech(
+        agentReply,
+        detectedLangRef.current,
+        null,
+        null,
+        () => updateOrbState('IDLE_STOPPED'),
+        true,
+      );
+    }
+  }, [agentReply, playServerOrBrowserSpeech, updateOrbState]);
 
   // Language switcher sync (NEVER resets session_id or form_state; respects IDLE_STOPPED & staff silence!)
   useEffect(() => {
@@ -1219,6 +1490,10 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
       userStoppedRef.current = false;
       setActivated(false);
       sessionIdRef.current = '';
+      lastFailedPayloadRef.current = null;
+      pendingBlockedAudioRef.current = null;
+      setVoiceError(null);
+      setAutoplayBlocked(false);
       setLastTranscript('');
       setScamAlert(null);
       setPolicyAnswer(null);
@@ -1258,6 +1533,10 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
     }
 
     if (prevId && !currId) {
+      if (suppressLogoutResetRef.current) {
+        suppressLogoutResetRef.current = false;
+        return;
+      }
       handleResetSession('HOME_WELCOME');
     } else if (
       user &&
@@ -1307,8 +1586,55 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
         return;
       }
 
-      const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/mp4';
-      const recorder = new MediaRecorder(stream, { mimeType });
+      // FIX 2.2: Start companion Web Speech API recognition in parallel (best-effort) for hybrid fallback if backend STT 502/503s
+      stopCompanionSpeechRecognition();
+      browserTranscriptRef.current = '';
+      if (typeof window !== 'undefined') {
+        const SpeechRecCtor =
+          (window as unknown as { SpeechRecognition?: new () => BrowserSpeechRecognitionInstance }).SpeechRecognition ??
+          (window as unknown as { webkitSpeechRecognition?: new () => BrowserSpeechRecognitionInstance })
+            .webkitSpeechRecognition;
+        if (SpeechRecCtor) {
+          try {
+            const recognition = new SpeechRecCtor();
+            recognition.continuous = true;
+            recognition.interimResults = true;
+            recognition.lang = LANGUAGE_REGISTRY[detectedLangRef.current]?.provider_language_code.bcp47 ?? 'ur-PK';
+            recognition.onresult = (event: BrowserSpeechRecognitionEvent) => {
+              const parts: string[] = [];
+              for (let i = 0; i < event.results.length; i++) {
+                const piece = event.results[i]?.[0]?.transcript;
+                if (piece) parts.push(piece.trim());
+              }
+              const joined = parts.filter(Boolean).join(' ').trim();
+              if (joined) {
+                browserTranscriptRef.current = joined;
+              }
+            };
+            recognition.onerror = () => {};
+            recognition.onend = () => {};
+            recognition.start();
+            speechRecognitionRef.current = recognition;
+          } catch {
+            // Companion Web Speech unavailable — MediaRecorder continues unaffected
+          }
+        }
+      }
+
+      // FIX 3.3: Dynamic MIME type selection across Chrome/Edge/Firefox/Safari/iOS
+      const preferredMimes = [
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/mp4',
+        'audio/ogg;codecs=opus',
+        'audio/ogg',
+        'audio/wav',
+      ];
+      const supportedMime =
+        typeof MediaRecorder !== 'undefined' && typeof MediaRecorder.isTypeSupported === 'function'
+          ? (preferredMimes.find((m) => MediaRecorder.isTypeSupported(m)) ?? '')
+          : '';
+      const recorder = supportedMime ? new MediaRecorder(stream, { mimeType: supportedMime }) : new MediaRecorder(stream);
       chunksRef.current = [];
       let speechFrames = 0;
 
@@ -1316,16 +1642,25 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
         if (ev.data.size > 0) chunksRef.current.push(ev.data);
       };
       recorder.onstop = async () => {
+        const capturedFallbackTranscript = browserTranscriptRef.current.trim();
+        stopCompanionSpeechRecognition();
         stopVadLoop();
         stream.getTracks().forEach((t) => t.stop());
         if (userStoppedRef.current || voiceDisabledRef.current) {
           updateOrbState('IDLE_STOPPED');
           return;
         }
-        const blob = new Blob(chunksRef.current, { type: mimeType });
+        const actualMime = recorder.mimeType || supportedMime || 'audio/webm';
+        const blob = new Blob(chunksRef.current, { type: actualMime });
         if (speechFrames >= 4 && blob.size > 1200 && !agentSpeakingRef.current && !inFlightRef.current) {
           await sendSessionTurn({
             audioBlob: blob,
+            fallbackTranscript: capturedFallbackTranscript || undefined,
+            autoReopenMic: continuousSessionActiveRef.current || handsFreeVadRef.current,
+          });
+        } else if (capturedFallbackTranscript.length >= 2 && !agentSpeakingRef.current && !inFlightRef.current) {
+          await sendSessionTurn({
+            transcript: capturedFallbackTranscript,
             autoReopenMic: continuousSessionActiveRef.current || handsFreeVadRef.current,
           });
         } else if (continuousSessionActiveRef.current && !userStoppedRef.current && !voiceDisabledRef.current) {
@@ -1404,7 +1739,7 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
         updateOrbState('IDLE_STOPPED');
       }
     }
-  }, [cancelAllSpeechOutputs, hardMuteAndStopMic, sendSessionTurn, stopVadLoop, updateOrbState]);
+  }, [cancelAllSpeechOutputs, hardMuteAndStopMic, sendSessionTurn, stopCompanionSpeechRecognition, stopVadLoop, updateOrbState]);
 
   /**
    * PHASE 2: Handle browser no-speech / silence timeout without dropping the continuous session!
@@ -1583,6 +1918,7 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
         setManualText,
         agentReply,
         autoplayBlocked,
+        voiceError,
         formState,
         authDraft,
         fieldFillHistory,
@@ -1600,6 +1936,9 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
         applicationsStatus,
         officerInquiries,
         sendSessionTurn,
+        retryLastTurn,
+        clearVoiceError,
+        playBlockedAudio,
         handleActivateTouch,
         interruptAndListen,
         hardStopVoiceAgent,

@@ -4,9 +4,73 @@ import type { AppEnv } from '../../config/env';
 import { AppError } from '../../core/security/errors';
 import type { AudioResult, TranscriptionResult, VoiceProvider } from './provider';
 
+export function isEmptyOrNoiseTranscript(raw: string | null | undefined): boolean {
+  const text = (raw ?? '').trim();
+  if (!text) return true;
+  if (/^[\s.,!?؟۔\-_~*()[\]{}'":;/\\…]+$/.test(text)) return true;
+  if (
+    /^[[(]\s*(?:blank_audio|silence|inaudible|music|applause|noise|laughter|cough|sigh|background\s+noise|no\s+speech|unintelligible|static)\s*[\])]\.?$/i.test(
+      text,
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function getAudioExtensionForMime(mimeType: string): string {
+  const lower = (mimeType || '').toLowerCase();
+  if (lower.includes('mp4') || lower.includes('m4a')) return 'mp4';
+  if (lower.includes('ogg')) return 'ogg';
+  if (lower.includes('wav')) return 'wav';
+  if (lower.includes('mpeg') || lower.includes('mp3')) return 'mp3';
+  return 'webm';
+}
+
+async function synthesizeZeroQuotaFallbackAudio(
+  text: string,
+  language: LanguageCode,
+  providerLabel: string,
+  ttsCache: Map<string, Buffer>,
+): Promise<AudioResult> {
+  const cacheKey = `${language}:${text.trim()}`;
+  const cachedBuf = ttsCache.get(cacheKey);
+  if (cachedBuf) {
+    const isWav = cachedBuf.subarray(0, 4).toString('ascii') === 'RIFF';
+    return {
+      audio: cachedBuf,
+      mimeType: isWav ? 'audio/wav' : 'audio/mpeg',
+      language,
+      provider: providerLabel,
+      cached: true,
+    };
+  }
+  const tl = language === 'en' ? 'en' : 'ur';
+  const cleaned = text.replace(/\s+/g, ' ').trim().slice(0, 190);
+  const url = `https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=${tl}&q=${encodeURIComponent(cleaned)}`;
+  const fallbackRes = await fetch(url, {
+    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+    signal: AbortSignal.timeout(4500),
+  });
+  if (!fallbackRes.ok) {
+    throw new AppError(502, 'TTS_SYNTHESIS_FAILED', `Fallback TTS returned status ${fallbackRes.status}`);
+  }
+  const mp3Buf = Buffer.from(await fallbackRes.arrayBuffer());
+  if (ttsCache.size < 100) {
+    ttsCache.set(cacheKey, mp3Buf);
+  }
+  return {
+    audio: mp3Buf,
+    mimeType: 'audio/mpeg',
+    language,
+    provider: `${providerLabel}-fallback`,
+    cached: false,
+  };
+}
+
 /**
- * Optional Gemini multimodal audio transcription adapter (active only when VOICE_PROVIDER=gemini
- * and GEMINI_API_KEY is set). TTS is honestly marked unsupported.
+ * Optional Gemini multimodal audio transcription adapter (active when VOICE_PROVIDER=gemini
+ * or VOICE_PROVIDER=auto with GEMINI_API_KEY set).
  */
 function wrapPcm16MonoToWav(pcm: Buffer, sampleRate = 24000): Buffer {
   const header = Buffer.alloc(44);
@@ -67,29 +131,58 @@ export class GeminiAudioVoiceProvider implements VoiceProvider {
     }
 
     const langMeta = LANGUAGE_REGISTRY[input.language];
-    const response = await this.client.models.generateContent({
-      model: this.model,
-      contents: [
-        {
-          text: `Transcribe the spoken audio verbatim in ${langMeta.display_name} (${langMeta.language_code}). Return ONLY the transcript text with no explanation or formatting.`,
-        },
-        {
-          inlineData: {
-            mimeType: input.mimeType,
-            data: input.audio.toString('base64'),
-          },
-        },
-      ],
-    });
+    const modelCandidates = Array.from(new Set([this.model, 'gemini-2.5-flash', 'gemini-2.0-flash']));
+    let rawText = '';
+    let lastErr: unknown = null;
+    for (const modelCandidate of modelCandidates) {
+      try {
+        const response = await this.client.models.generateContent({
+          model: modelCandidate,
+          contents: [
+            {
+              text: `Transcribe the spoken audio verbatim in ${langMeta.display_name} (${langMeta.language_code}). Return ONLY the transcript text with no explanation or formatting. If there is only silence or background noise with no speech, return an empty string.`,
+            },
+            {
+              inlineData: {
+                mimeType: input.mimeType,
+                data: input.audio.toString('base64'),
+              },
+            },
+          ],
+        });
+        rawText = (response.text ?? '').trim();
+        lastErr = null;
+        break;
+      } catch (err) {
+        lastErr = err;
+      }
+    }
 
-    const text = (response.text ?? '').trim();
-    if (!text) {
-      throw new AppError(422, 'EMPTY_TRANSCRIPTION', 'Could not transcribe audio. Please retry or use text input.');
+    if (lastErr) {
+      throw new AppError(
+        502,
+        'VOICE_STT_FAILED',
+        `Gemini STT failed: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`,
+      );
+    }
+
+    const text = rawText.trim();
+    if (isEmptyOrNoiseTranscript(text)) {
+      return {
+        text: '',
+        language: input.language,
+        detected_language: input.language,
+        provider: this.providerName,
+        confidence: null,
+        verified_language: langMeta.stt_supported,
+        empty_transcription: true,
+      };
     }
 
     return {
       text,
       language: input.language,
+      detected_language: input.language,
       provider: this.providerName,
       confidence: null,
       verified_language: langMeta.stt_supported,
@@ -203,16 +296,19 @@ export class GroqWhisperVoiceProvider implements VoiceProvider {
   public readonly providerName = 'groq';
   private readonly apiKey: string;
   private readonly sttModel: string;
+  private readonly timeoutMs: number;
   private readonly fallbackGemini: GeminiAudioVoiceProvider | null;
+  private readonly ttsCache = new Map<string, Buffer>();
 
   constructor(env: AppEnv) {
     this.apiKey = env.GROQ_API_KEY.trim();
     this.sttModel = env.GROQ_STT_MODEL;
+    this.timeoutMs = env.VOICE_REQUEST_TIMEOUT_MS;
     this.fallbackGemini = env.GEMINI_API_KEY.trim() ? new GeminiAudioVoiceProvider(env) : null;
   }
 
   isConfigured(): boolean {
-    return Boolean(this.apiKey);
+    return Boolean(this.apiKey || this.fallbackGemini?.isConfigured());
   }
 
   supportsStt(_language: LanguageCode): boolean {
@@ -230,11 +326,14 @@ export class GroqWhisperVoiceProvider implements VoiceProvider {
     autoDetect?: boolean;
   }): Promise<TranscriptionResult> {
     if (!this.apiKey) {
+      if (this.fallbackGemini?.isConfigured()) {
+        return await this.fallbackGemini.transcribe(input);
+      }
       throw new AppError(503, 'VOICE_PROVIDER_UNCONFIGURED', 'GROQ_API_KEY is required for Groq Whisper STT.');
     }
 
     const langMeta = LANGUAGE_REGISTRY[input.language];
-    const ext = input.mimeType.includes('mp4') ? 'mp4' : input.mimeType.includes('wav') ? 'wav' : 'webm';
+    const ext = getAudioExtensionForMime(input.mimeType);
     const form = new FormData();
     form.append('file', new Blob([new Uint8Array(input.audio)], { type: input.mimeType }), `audio.${ext}`);
     form.append('model', this.sttModel);
@@ -262,6 +361,7 @@ export class GroqWhisperVoiceProvider implements VoiceProvider {
           Authorization: `Bearer ${this.apiKey}`,
         },
         body: form,
+        signal: AbortSignal.timeout(this.timeoutMs),
       });
 
       if (!res.ok) {
@@ -274,8 +374,16 @@ export class GroqWhisperVoiceProvider implements VoiceProvider {
 
       const data = (await res.json()) as { text?: string; language?: string };
       const text = (data.text ?? '').trim();
-      if (!text) {
-        throw new AppError(422, 'EMPTY_TRANSCRIPTION', 'Could not transcribe audio. Please retry or use text input.');
+      if (isEmptyOrNoiseTranscript(text)) {
+        return {
+          text: '',
+          language: input.language,
+          detected_language: input.language,
+          provider: this.providerName,
+          confidence: null,
+          verified_language: true,
+          empty_transcription: true,
+        };
       }
 
       const rawDetected = (data.language ?? '').toLowerCase();
@@ -306,10 +414,13 @@ export class GroqWhisperVoiceProvider implements VoiceProvider {
     if (this.fallbackGemini?.isConfigured()) {
       return await this.fallbackGemini.synthesize(input);
     }
+    if (this.apiKey) {
+      return await synthesizeZeroQuotaFallbackAudio(input.text, input.language, this.providerName, this.ttsCache);
+    }
     throw new AppError(
       501,
       'TTS_NOT_SUPPORTED',
-      'Server-side TTS requires GEMINI_API_KEY or LINGOSCRIBE_API_KEY. Using browser assistive speech synthesis.',
+      'Server-side TTS requires GROQ_API_KEY, GEMINI_API_KEY, or LINGOSCRIBE_API_KEY. Using browser assistive speech synthesis.',
     );
   }
 }
@@ -345,7 +456,22 @@ export function createVoiceProvider(env: AppEnv): VoiceProvider {
   if (env.VOICE_PROVIDER === 'lingoscribe') {
     return new LingoscribeVoiceProvider(env);
   }
+  if (env.VOICE_PROVIDER === 'auto') {
+    if (env.GROQ_API_KEY.trim()) {
+      return new GroqWhisperVoiceProvider(env);
+    }
+    if (env.GEMINI_API_KEY.trim()) {
+      return new GeminiAudioVoiceProvider(env);
+    }
+    if (env.LINGOSCRIBE_API_KEY.trim() && env.VOICE_PROVIDER_BASE_URL.trim()) {
+      return new LingoscribeVoiceProvider(env);
+    }
+    return new UnconfiguredVoiceProvider();
+  }
   if (env.VOICE_PROVIDER === 'groq' || (env.VOICE_PROVIDER !== 'gemini' && env.GROQ_API_KEY.trim())) {
+    if (!env.GROQ_API_KEY.trim() && env.GEMINI_API_KEY.trim()) {
+      return new GeminiAudioVoiceProvider(env);
+    }
     return new GroqWhisperVoiceProvider(env);
   }
   if (env.VOICE_PROVIDER === 'gemini' || env.GEMINI_API_KEY.trim()) {

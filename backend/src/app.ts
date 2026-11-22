@@ -115,6 +115,7 @@ export function createApp(overrides: AppDependencies = {}): {
       credentials: true,
       methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
       allowedHeaders: ['Authorization', 'Content-Type', 'X-Organization-Id', 'x-tenant-id', 'X-Requested-With'],
+      exposedHeaders: ['X-Auth-Cleared', 'X-Voice-Provider', 'X-Voice-Cached'],
     }),
   );
   app.use(cookieParser());

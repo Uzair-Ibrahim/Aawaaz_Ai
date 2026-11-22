@@ -27,6 +27,7 @@ interface AuthContextValue {
     preferred_language?: LanguageCode;
   }) => Promise<AuthSessionUser>;
   setAuthenticatedSession: (accessToken: string, sessionUser: AuthSessionUser) => void;
+  clearLocalAuthSession: () => void;
   logout: () => Promise<void>;
   switchWorkspace: (organizationId: string) => Promise<void>;
   refreshSession: () => Promise<void>;
@@ -137,12 +138,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  const logout = useCallback(async () => {
-    try {
-      await apiRequest('/auth/logout', { method: 'POST', token });
-    } catch {
-      // Ignore
-    }
+  const clearLocalAuthSession = useCallback(() => {
     setToken(null);
     setUser(null);
     setActiveOrganizationId(null);
@@ -150,7 +146,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       window.localStorage.removeItem(TOKEN_STORAGE_KEY);
       window.localStorage.removeItem(ORG_STORAGE_KEY);
     }
-  }, [token]);
+  }, []);
+
+  const logout = useCallback(async () => {
+    try {
+      await apiRequest('/auth/logout', { method: 'POST', token });
+    } catch {
+      // Ignore
+    }
+    clearLocalAuthSession();
+  }, [token, clearLocalAuthSession]);
 
   const switchWorkspace = useCallback(
     async (organizationId: string) => {
@@ -195,6 +200,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         login,
         register,
         setAuthenticatedSession,
+        clearLocalAuthSession,
         logout,
         switchWorkspace,
         refreshSession,

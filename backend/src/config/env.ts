@@ -175,31 +175,61 @@ export function getIntegrationStatus(env: AppEnv): IntegrationStatus {
         ? env.GITHUB_MODEL
         : env.GEMINI_MODEL;
 
+  const hasLingoscribe = Boolean(env.LINGOSCRIBE_API_KEY.trim() && env.VOICE_PROVIDER_BASE_URL.trim());
   let voiceProvider: 'unconfigured' | 'groq' | 'lingoscribe' | 'gemini' =
     env.VOICE_PROVIDER === 'auto' ? 'unconfigured' : env.VOICE_PROVIDER;
   let voiceConfigured = false;
   let voiceReason: string | undefined;
 
-  if (env.VOICE_PROVIDER === 'lingoscribe') {
-    voiceConfigured = Boolean(env.LINGOSCRIBE_API_KEY.trim() && env.VOICE_PROVIDER_BASE_URL.trim());
+  if (env.VOICE_PROVIDER === 'unconfigured') {
+    if (hasGroq) {
+      voiceProvider = 'groq';
+      voiceConfigured = true;
+    } else if (hasGemini) {
+      voiceProvider = 'gemini';
+      voiceConfigured = true;
+    } else {
+      voiceProvider = 'unconfigured';
+      voiceReason = 'No speech provider key configured (set GROQ_API_KEY, GEMINI_API_KEY, or LINGOSCRIBE_API_KEY). Text input fallback is active.';
+    }
+  } else if (env.VOICE_PROVIDER === 'lingoscribe') {
+    voiceProvider = 'lingoscribe';
+    voiceConfigured = hasLingoscribe;
     if (!voiceConfigured) {
       voiceReason = 'Lingoscribe requires LINGOSCRIBE_API_KEY and verified VOICE_PROVIDER_BASE_URL.';
     }
-  } else if (env.VOICE_PROVIDER === 'groq' || (env.VOICE_PROVIDER !== 'gemini' && hasGroq)) {
-    voiceProvider = 'groq';
-    voiceConfigured = hasGroq;
-    if (!voiceConfigured) {
-      voiceReason = 'Groq Whisper STT requires GROQ_API_KEY.';
+  } else if (env.VOICE_PROVIDER === 'auto') {
+    if (hasGroq) {
+      voiceProvider = 'groq';
+      voiceConfigured = true;
+    } else if (hasGemini) {
+      voiceProvider = 'gemini';
+      voiceConfigured = true;
+    } else if (hasLingoscribe) {
+      voiceProvider = 'lingoscribe';
+      voiceConfigured = true;
+    } else {
+      voiceProvider = 'unconfigured';
+      voiceReason = 'No speech provider key configured (set GROQ_API_KEY, GEMINI_API_KEY, or LINGOSCRIBE_API_KEY). Text input fallback is active.';
     }
-  } else if (env.VOICE_PROVIDER === 'gemini' || hasGemini) {
+  } else if (env.VOICE_PROVIDER === 'groq') {
+    if (hasGroq) {
+      voiceProvider = 'groq';
+      voiceConfigured = true;
+    } else if (hasGemini) {
+      voiceProvider = 'gemini';
+      voiceConfigured = true;
+    } else {
+      voiceProvider = 'groq';
+      voiceConfigured = false;
+      voiceReason = 'Groq Whisper STT requires GROQ_API_KEY (or set GEMINI_API_KEY for fallback).';
+    }
+  } else if (env.VOICE_PROVIDER === 'gemini') {
     voiceProvider = 'gemini';
     voiceConfigured = hasGemini;
     if (!voiceConfigured) {
       voiceReason = 'Gemini audio adapter requires GEMINI_API_KEY.';
     }
-  } else {
-    voiceProvider = 'unconfigured';
-    voiceReason = 'No speech provider key configured (set GROQ_API_KEY, GEMINI_API_KEY, or LINGOSCRIBE_API_KEY). Text input fallback is active.';
   }
 
   const effectivePublishable = getEffectiveSupabasePublishableKey(env);

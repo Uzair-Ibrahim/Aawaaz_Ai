@@ -2041,4 +2041,128 @@ describe('Awaaz Multi-User SaaS Authorization, Tenant Isolation & Idea 1 Vertica
     expect(metricsRes.body.metrics.likely_forged_flagged).toBe(1);
     expect(metricsRes.body.metrics.possible_false_alarms_protected).toBe(1);
   });
+
+  it('recovers gracefully from stale/expired JWT or cookie on /voice/session (HTTP 200 + auth_cleared) while preserving strict 401 on protected routes', async () => {
+    const { app } = setupTestApp();
+    const staleJwt = 'stale.invalid.token-from-previous-render-boot';
+
+    // 1. Stale Bearer token on /api/v1/voice/session MUST NOT 401 — falls back seamlessly to unauthenticated voice mode!
+    const bearerRes = await request(app)
+      .post('/api/v1/voice/session')
+      .set('Authorization', `Bearer ${staleJwt}`)
+      .send({
+        workflow_stage: 'HOME_WELCOME',
+        language: 'ur',
+        synthesize_audio: false,
+      })
+      .expect(200);
+    expect(bearerRes.body.auth_cleared).toBe(true);
+    expect(bearerRes.body.session_id).toBeTruthy();
+    expect(bearerRes.body.agent_reply_text).toBeTruthy();
+    const setCookiesBearer = (bearerRes.headers['set-cookie'] ?? []) as string[];
+    expect(setCookiesBearer.some((c) => c.startsWith('awaaz_session=;'))).toBe(true);
+
+    // 2. Stale awaaz_session cookie on /api/v1/voice/session MUST ALSO recover to HTTP 200 + auth_cleared: true!
+    const cookieRes = await request(app)
+      .post('/api/v1/voice/session')
+      .set('Cookie', [`awaaz_session=${staleJwt}`])
+      .send({
+        workflow_stage: 'HOME_WELCOME',
+        language: 'en',
+        transcript: 'I am a normal citizen',
+        synthesize_audio: false,
+      })
+      .expect(200);
+    expect(cookieRes.body.auth_cleared).toBe(true);
+    expect(cookieRes.body.workflow_stage).toBe('CITIZEN_ACCOUNT_CHECK');
+
+    // 3. Security preserved: Protected endpoints MUST still strictly reject the exact same stale token with 401!
+    await request(app).get('/api/v1/officer/cases').set('Authorization', `Bearer ${staleJwt}`).expect(401);
+    await request(app).get('/api/v1/admin/agent-audit-trail').set('Authorization', `Bearer ${staleJwt}`).expect(401);
+    await request(app).get('/api/v1/cases').set('Authorization', `Bearer ${staleJwt}`).expect(401);
+    await request(app).get('/api/v1/consent/my-data').set('Authorization', `Bearer ${staleJwt}`).expect(401);
+  });
+
+  it('handles empty or noise-only STT transcription gracefully (HTTP 200, empty_transcription, no_state_change, localized prompt + TTS)', async () => {
+    const env = loadEnv({
+      NODE_ENV: 'test',
+      DATA_STORE_MODE: 'memory',
+      AUTH_MODE: 'dev_local',
+      GEMINI_API_KEY: '',
+      GROQ_API_KEY: '',
+      GITHUB_TOKEN: '',
+      VOICE_PROVIDER: 'auto',
+    });
+    const store = new MemoryDataStore(true);
+    const fakeWav = Buffer.from('RIFF....WAVEfmt ');
+    const mockEmptySttVoiceProvider = {
+      providerName: 'mock-empty-stt',
+      isConfigured: () => true,
+      supportsStt: () => true,
+      supportsTts: () => true,
+      transcribe: async () => ({
+        text: '   ...   ',
+        language: 'ur' as const,
+        detected_language: 'ur' as const,
+        provider: 'mock-empty-stt',
+        confidence: null,
+        verified_language: true,
+        empty_transcription: true,
+      }),
+      synthesize: async ({ language }: { text: string; language: 'en' | 'ur' | 'sd' | 'pa' | 'ps' | 'bal' }) => ({
+        audio: fakeWav,
+        mimeType: 'audio/wav',
+        language,
+        provider: 'mock-empty-stt',
+        cached: false,
+      }),
+    };
+    const { app } = createApp({ env, store, voiceProvider: mockEmptySttVoiceProvider });
+
+    // 1. Seed a real session in Urdu with workflow progress
+    const startTurn = await request(app)
+      .post('/api/v1/voice/session')
+      .send({
+        workflow_stage: 'HOME_WELCOME',
+        language: 'ur',
+        transcript: 'Main aam citizen hoon',
+        synthesize_audio: false,
+      })
+      .expect(200);
+    const sid = startTurn.body.session_id as string;
+    expect(startTurn.body.workflow_stage).toBe('CITIZEN_ACCOUNT_CHECK');
+
+    // 2. Send an audio turn whose STT returns noise/empty -> MUST return HTTP 200 (NEVER 422!), preserve stage, speak Urdu prompt + TTS!
+    const emptyUrRes = await request(app)
+      .post('/api/v1/voice/session')
+      .field('session_id', sid)
+      .field('locked_language', 'ur')
+      .field('synthesize_audio', 'true')
+      .attach('audio', Buffer.from('fake-silent-webm-bytes'), {
+        filename: 'utterance.webm',
+        contentType: 'audio/webm',
+      })
+      .expect(200);
+    expect(emptyUrRes.body.empty_transcription).toBe(true);
+    expect(emptyUrRes.body.no_state_change).toBe(true);
+    expect(emptyUrRes.body.workflow_stage).toBe('CITIZEN_ACCOUNT_CHECK');
+    expect(emptyUrRes.body.agent_reply_text).toContain('آواز صاف نہیں آئی');
+    expect(emptyUrRes.body.agent_reply_audio).toBeTruthy();
+
+    // 3. Zero-byte audio in English -> graceful HTTP 200 with English polite prompt!
+    const emptyEnRes = await request(app)
+      .post('/api/v1/voice/session')
+      .field('language', 'en')
+      .field('locked_language', 'en')
+      .field('synthesize_audio', 'true')
+      .attach('audio', Buffer.alloc(0), {
+        filename: 'utterance.mp4',
+        contentType: 'audio/mp4',
+      })
+      .expect(200);
+    expect(emptyEnRes.body.empty_transcription).toBe(true);
+    expect(emptyEnRes.body.no_state_change).toBe(true);
+    expect(emptyEnRes.body.agent_reply_text.toLowerCase()).toContain('speak again');
+    expect(emptyEnRes.body.agent_reply_audio).toBeTruthy();
+  });
 });

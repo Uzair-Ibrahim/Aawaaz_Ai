@@ -43,6 +43,7 @@ export class GeminiAIProvider implements AIProvider {
   public readonly modelName: string;
   public readonly embeddingModelName: string;
   private readonly apiKey: string;
+  private readonly geminiModel: string;
   private readonly groqApiKey: string;
   private readonly groqModel: string;
   private readonly githubToken: string;
@@ -52,6 +53,7 @@ export class GeminiAIProvider implements AIProvider {
 
   constructor(env: AppEnv) {
     this.apiKey = env.GEMINI_API_KEY.trim();
+    this.geminiModel = env.GEMINI_MODEL;
     this.groqApiKey = (env.GROQ_API_KEY ?? '').trim();
     this.groqModel = env.GROQ_CHAT_MODEL ?? 'openai/gpt-oss-120b';
     this.githubToken = (env.GITHUB_TOKEN ?? '').trim();
@@ -141,22 +143,25 @@ export class GeminiAIProvider implements AIProvider {
     }
 
     if (this.client) {
-      try {
-        const response = await withTimeout(
-          this.client.models.generateContent({
-            model: this.modelName,
-            contents: prompt,
-            config: {
-              responseMimeType: 'application/json',
-              temperature: 0.1,
-            },
-          }),
-          effectiveTimeout,
-          label,
-        );
-        if (response.text) return response.text;
-      } catch (err) {
-        errors.push(`Gemini: ${err instanceof Error ? err.message : String(err)}`);
+      const geminiCandidates = Array.from(new Set([this.geminiModel, 'gemini-2.5-flash', 'gemini-2.0-flash']));
+      for (const modelCandidate of geminiCandidates) {
+        try {
+          const response = await withTimeout(
+            this.client.models.generateContent({
+              model: modelCandidate,
+              contents: prompt,
+              config: {
+                responseMimeType: 'application/json',
+                temperature: 0.1,
+              },
+            }),
+            effectiveTimeout,
+            `${label} (${modelCandidate})`,
+          );
+          if (response.text) return response.text;
+        } catch (err) {
+          errors.push(`Gemini(${modelCandidate}): ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
     }
 

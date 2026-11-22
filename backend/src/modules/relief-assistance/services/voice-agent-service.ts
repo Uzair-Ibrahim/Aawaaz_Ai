@@ -31,6 +31,8 @@ import { DEFAULT_ORG_IDS } from '../../../core/database/seed-data';
 import type { DataStore } from '../../../core/database/types';
 import type { AppEnv } from '../../../config/env';
 import type { AIProvider } from '../../../integrations/ai/provider';
+import { AppError } from '../../../core/security/errors';
+import { isEmptyOrNoiseTranscript } from '../../../integrations/voice';
 import type { VoiceProvider } from '../../../integrations/voice/provider';
 import {
   AwaazLangGraphAgent,
@@ -153,6 +155,9 @@ export interface VoiceSessionTurnResult {
     discovered_tools_count: number;
     sdk: string;
   };
+  empty_transcription?: boolean;
+  no_state_change?: boolean;
+  auth_cleared?: boolean;
 }
 
 function emptyFormState(): VoiceSessionFormState {
@@ -790,6 +795,23 @@ function localizedVoicePaused(lang: LanguageCode): string {
       return 'شر انت، من اوشتاتاں۔ ہر وھد ءَ کہ گپ جنگ لوٹ اِت مائیک ءِ بٹن ءَ بزن اِت۔';
     default:
       return 'ٹھیک ہے، میں رک گیا ہوں۔ جب آپ دوبارہ بات کرنا چاہیں تو مائیک بٹن دبائیں۔';
+  }
+}
+
+export function localizedEmptyAudioPrompt(lang: LanguageCode): string {
+  switch (lang) {
+    case 'en':
+      return "I couldn't hear you clearly, please speak again.";
+    case 'sd':
+      return 'آواز صاف نه آيو، مهرباني ڪري ٿورو ويجهو ٿي ٻيهر ڳالهايو.';
+    case 'pa':
+      return 'آواز صاف نہیں آئی، مہربانی کر کے تھوڑا نیڑے ہو کے دوبارہ بولو۔';
+    case 'ps':
+      return 'غږ سم نه اورېدل کېږي، مهرباني وکړئ لږ نږدې شئ او بیا خبرې وکړئ.';
+    case 'bal':
+      return 'توار ساپ نہ آتک، مہربانی کن کمے نزیک بہ ءُ پدا بگوش۔';
+    default:
+      return 'آواز صاف نہیں آئی، مہربانی کر کے تھوڑا قریب سے دوبارہ بولیں۔';
   }
 }
 
@@ -2072,6 +2094,7 @@ export class VoiceAgentService {
     sessionId?: string;
     audioBuffer?: Buffer;
     audioMimeType?: string;
+    hasAudioUpload?: boolean;
     transcript?: string;
     languageHint?: LanguageCode;
     languageExplicitSwitch?: boolean;
@@ -2132,18 +2155,109 @@ export class VoiceAgentService {
     const wantAudio = input.synthesizeAudio ?? true;
 
     // 1. Speech-to-Text locked strictly to locked_language once set (breaks Urdu -> English STT trap!)
+    // FIX 2: Gracefully handle empty/noise-only audio or 422 EMPTY_TRANSCRIPTION with a clean HTTP 200 polite reply + TTS!
     let transcript = (input.transcript ?? '').trim();
     let whisperDetectedLang: LanguageCode | undefined;
-    if (input.audioBuffer && input.audioBuffer.length > 0 && !transcript) {
-      const sttLang = memory.locked_language ?? memory.detected_language ?? input.languageHint ?? 'ur';
-      const stt = await this.deps.voiceProvider.transcribe({
-        audio: input.audioBuffer,
-        language: sttLang,
-        mimeType: input.audioMimeType ?? 'audio/webm',
-        autoDetect: !memory.language_locked,
-      });
-      transcript = stt.text.trim();
-      whisperDetectedLang = stt.detected_language;
+    const isAudioTurn = Boolean((input.audioBuffer !== undefined || input.hasAudioUpload) && !transcript);
+    let isEmptyTranscription = false;
+
+    if (isAudioTurn) {
+      if (!input.audioBuffer || input.audioBuffer.length === 0) {
+        isEmptyTranscription = true;
+      } else {
+        const sttLang = memory.locked_language ?? memory.detected_language ?? input.languageHint ?? 'ur';
+        try {
+          const stt = await this.deps.voiceProvider.transcribe({
+            audio: input.audioBuffer,
+            language: sttLang,
+            mimeType: input.audioMimeType ?? 'audio/webm',
+            autoDetect: !memory.language_locked,
+          });
+          transcript = (stt.text ?? '').trim();
+          whisperDetectedLang = stt.detected_language;
+          if (stt.empty_transcription || isEmptyOrNoiseTranscript(transcript)) {
+            isEmptyTranscription = true;
+            transcript = '';
+          }
+        } catch (err) {
+          if (err instanceof AppError && err.code === 'EMPTY_TRANSCRIPTION') {
+            isEmptyTranscription = true;
+            transcript = '';
+          } else {
+            throw err;
+          }
+        }
+      }
+    }
+
+    if (isEmptyTranscription) {
+      const activeLang: LanguageCode =
+        input.languageExplicitSwitch && input.languageHint
+          ? input.languageHint
+          : (memory.locked_language ?? memory.detected_language ?? input.languageHint ?? 'ur');
+      const politeReply = localizedEmptyAudioPrompt(activeLang);
+      const audioOut = await this.trySynthesize(politeReply, activeLang, wantAudio);
+      const safeUiAction: VoiceUiAction =
+        memory.workflow_stage === 'HOME_WELCOME' ||
+        memory.workflow_stage === 'LANGUAGE_SELECT' ||
+        memory.workflow_stage === 'ROLE_IDENTIFICATION' ||
+        memory.workflow_stage === 'CITIZEN_ACCOUNT_CHECK'
+          ? 'STAY_HOME'
+          : 'UPDATE_FORM';
+
+      return {
+        session_id: memory.session_id,
+        audit_log_id: crypto.randomUUID(),
+        workflow_stage: memory.workflow_stage,
+        active_task: memory.active_task,
+        suspended_tasks: memory.suspended_tasks,
+        memory_action: 'NONE',
+        detected_language: activeLang,
+        locked_language: activeLang,
+        language_guard_status: 'PASSED',
+        langgraph_nodes_visited: [],
+        mcp_protocol_info: this.mcpClient.getProtocolInfo(),
+        transcript: '',
+        agent_reply_text: politeReply,
+        agent_reply_audio: audioOut?.base64 ?? null,
+        agent_reply_audio_mime: audioOut?.mimeType ?? null,
+        form_state: formState,
+        auth_draft: {
+          ...memory.auth_draft,
+          pin: memory.auth_draft.pin ? '****' : '',
+        },
+        field_fill_history:
+          memory.workflow_stage === 'AUTH_GATE'
+            ? [...(memory.auth_draft.field_fill_history ?? [])]
+            : [...(memory.field_fill_history ?? [])],
+        editing_field:
+          memory.workflow_stage === 'AUTH_GATE'
+            ? (memory.auth_draft.editing_field ?? null)
+            : (memory.editing_field ?? null),
+        currently_asked_field:
+          memory.workflow_stage === 'AUTH_GATE' && memory.auth_draft.mode === 'signup'
+            ? (memory.auth_draft.editing_field ?? computeMissingAuthSignupFields(memory.auth_draft)[0] ?? null)
+            : memory.workflow_stage === 'RELIEF_FORM'
+              ? (memory.editing_field ?? computeMissingFields(formState)[0] ?? null)
+              : null,
+        validation_errors: [],
+        access_control_decision: accessControlDecision,
+        capability_check: 'IN_SCOPE',
+        reasoning_steps: [
+          `Step 1 [Empty/Noise STT Recovery]: Audio contained silence or background noise only; preserved stage '${memory.workflow_stage}' with zero state mutation and emitted polite '${activeLang}' repeat prompt.`,
+        ],
+        self_reflection_check: {
+          passed: true,
+          self_corrected: false,
+          notes: 'Graceful empty-audio recovery verified; no form or session state mutated.',
+        },
+        mcp_tools_called: [],
+        ui_action: safeUiAction,
+        navigate_to: null,
+        session_ended: false,
+        empty_transcription: true,
+        no_state_change: true,
+      };
     }
 
     const pendingToolCalls: PlannedMcpToolCall[] = [];

@@ -7,6 +7,7 @@ export interface TranscriptionResult {
   provider: string;
   confidence: number | null;
   verified_language: boolean;
+  empty_transcription?: boolean;
 }
 
 export interface AudioResult {

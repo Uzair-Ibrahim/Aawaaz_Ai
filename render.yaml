@@ -18,7 +18,7 @@ services:
       - key: STORAGE_BACKEND
         value: memory
       - key: VOICE_PROVIDER
-        value: groq
+        value: auto
       - key: SUPABASE_STORAGE_BUCKET
         value: awaaz-private-documents
       - key: FRONTEND_URL

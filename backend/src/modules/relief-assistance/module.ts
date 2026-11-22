@@ -167,13 +167,49 @@ export function createReliefAssistanceModule(deps: {
       res.json({ languages });
     });
 
-    // Optional auth middleware for voice endpoints so pre-login citizen onboarding can also use speech
+    // Optional auth middleware for voice endpoints so pre-login citizen onboarding can also use speech.
+    // FIX 1: Stale/expired/unknown JWTs or cookies NEVER deadlock voice endpoints with 401;
+    // instead we clear the stale awaaz_session cookie, set req.auth = undefined & req.authCleared = true,
+    // and fall back cleanly into unauthenticated voice mode (HTTP 200).
+    const clearStaleSessionCookie = (res: Response) => {
+      const isProd = env.NODE_ENV === 'production';
+      res.clearCookie(SESSION_COOKIE_NAME, {
+        httpOnly: true,
+        sameSite: isProd ? 'none' : 'lax',
+        secure: isProd,
+        path: '/',
+      });
+      if (isProd) {
+        res.clearCookie(SESSION_COOKIE_NAME, {
+          httpOnly: true,
+          sameSite: 'lax',
+          secure: true,
+          path: '/',
+        });
+      }
+    };
+
     const optionalVoiceAuth = async (req: Request, res: Response, next: NextFunction) => {
       const hasBearer = Boolean(req.headers.authorization?.startsWith('Bearer '));
-      const hasCookie = Boolean(req.cookies?.awaaz_session);
+      const hasCookie = Boolean(req.cookies?.[SESSION_COOKIE_NAME]);
       if (hasBearer || hasCookie) {
         return requireAuth(req, res, (err?: unknown) => {
-          if (err) return next(err);
+          if (err) {
+            const isStaleAuthFailure =
+              err instanceof AppError &&
+              (err.statusCode === 401 ||
+                err.code === 'INVALID_TOKEN' ||
+                err.code === 'PROFILE_MISSING' ||
+                err.code === 'UNAUTHORIZED');
+            if (isStaleAuthFailure) {
+              clearStaleSessionCookie(res);
+              req.auth = undefined;
+              req.authCleared = true;
+              next();
+              return;
+            }
+            return next(err);
+          }
           return requirePermission('voice:use')(req, res, next);
         });
       }
@@ -206,7 +242,11 @@ export function createReliefAssistanceModule(deps: {
             mimeType: req.file.mimetype,
           });
 
-          res.json({ transcription: result });
+          res.json({
+            transcription: result,
+            ...(result.empty_transcription ? { empty_transcription: true } : {}),
+            ...(req.authCleared ? { auth_cleared: true } : {}),
+          });
         } catch (err) {
           next(err);
         }
@@ -231,6 +271,9 @@ export function createReliefAssistanceModule(deps: {
           res.setHeader('Content-Type', audio.mimeType);
           res.setHeader('X-Voice-Provider', audio.provider);
           res.setHeader('X-Voice-Cached', String(audio.cached));
+          if (req.authCleared) {
+            res.setHeader('X-Auth-Cleared', 'true');
+          }
           res.send(audio.audio);
         } catch (err) {
           next(err);
@@ -384,6 +427,7 @@ export function createReliefAssistanceModule(deps: {
             sessionId: typeof req.body?.session_id === 'string' ? req.body.session_id : undefined,
             audioBuffer: req.file?.buffer,
             audioMimeType: req.file?.mimetype,
+            hasAudioUpload: Boolean(req.file),
             transcript: typeof req.body?.transcript === 'string' ? req.body.transcript : undefined,
             languageHint: parsedLang.success ? parsedLang.data : undefined,
             languageExplicitSwitch,
@@ -396,14 +440,18 @@ export function createReliefAssistanceModule(deps: {
             auth: req.auth,
           });
           if (turnResult.auth_session?.access_token) {
+            const isProd = env.NODE_ENV === 'production';
             res.cookie(SESSION_COOKIE_NAME, turnResult.auth_session.access_token, {
               httpOnly: true,
-              sameSite: 'lax',
-              secure: env.NODE_ENV === 'production',
+              sameSite: isProd ? 'none' : 'lax',
+              secure: isProd,
               maxAge: 12 * 60 * 60 * 1000,
             });
           }
-          res.json(turnResult);
+          res.json({
+            ...turnResult,
+            ...(req.authCleared ? { auth_cleared: true } : {}),
+          });
         } catch (err) {
           next(err);
         }
@@ -453,6 +501,7 @@ export function createReliefAssistanceModule(deps: {
           res.json({
             call_sid: callSid,
             ...turn,
+            ...(req.authCleared ? { auth_cleared: true } : {}),
             keypad_menu_hint: keypadMenuHint,
             twiml,
           });
@@ -500,6 +549,7 @@ export function createReliefAssistanceModule(deps: {
             sessionId: callSid,
             audioBuffer: req.file?.buffer,
             audioMimeType: req.file?.mimetype,
+            hasAudioUpload: Boolean(req.file),
             transcript: speechResult || undefined,
             languageHint: parsedLang.success ? parsedLang.data : undefined,
             workflowStageHint: 'RELIEF_FORM',
@@ -521,6 +571,7 @@ export function createReliefAssistanceModule(deps: {
               call_sid: callSid,
               digits_pressed: digits || null,
               ...turn,
+              ...(req.authCleared ? { auth_cleared: true } : {}),
               twiml,
             });
             return;
