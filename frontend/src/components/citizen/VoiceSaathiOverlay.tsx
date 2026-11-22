@@ -46,10 +46,16 @@ import {
 export function VoiceSaathiOverlay({
   onOpenKeypadPhone,
   onCaseSubmitted,
+  rightSlot,
 }: {
   onOpenKeypadPhone?: () => void;
   onCaseSubmitted?: () => void;
+  rightSlot?: React.ReactNode;
 }) {
+  const [mountId, setMountId] = useState<string>('voice-mount-ssr');
+  useEffect(() => {
+    setMountId(`voice-mount-${Math.random().toString(36).slice(2, 10)}`);
+  }, []);
   const { user, token, activeOrganizationId } = useAuth();
   const { dict, setLanguage, statusLabel } = useI18n();
   const va = dict.voiceAgent;
@@ -67,6 +73,8 @@ export function VoiceSaathiOverlay({
   const {
     workflowStage,
     suspendedTasks,
+    continuousSessionActive,
+    currentlyAskedField,
     handsFreeVad,
     setHandsFreeVad,
     autoInterrupt,
@@ -102,7 +110,8 @@ export function VoiceSaathiOverlay({
   } = useVoiceAgent();
 
   useEffect(() => {
-    registerOnCaseSubmitted(onCaseSubmitted ?? null);
+    if (!onCaseSubmitted) return;
+    registerOnCaseSubmitted(onCaseSubmitted);
     return () => registerOnCaseSubmitted(null);
   }, [onCaseSubmitted, registerOnCaseSubmitted]);
 
@@ -254,24 +263,27 @@ export function VoiceSaathiOverlay({
   return (
     <section
       data-testid="voice-saathi-overlay"
+      data-mount-id={mountId}
       data-workflow-stage={workflowStage}
       data-voice-state={orbState}
-      className="rounded-3xl bg-gradient-to-br from-slate-900 via-teal-950 to-slate-900 text-white p-5 sm:p-7 shadow-xl border border-teal-700/50 space-y-5"
+      data-continuous-active={continuousSessionActive ? 'true' : 'false'}
+      data-currently-asked-field={currentlyAskedField ?? ''}
+      className="rounded-3xl bg-gradient-to-br from-[#0B1D3A] via-[#0F2D5C] to-[#13294B] text-white p-5 sm:p-7 shadow-xl border border-blue-500/40 space-y-5"
     >
       {/* Clean Minimal Top Bar */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2.5 flex-wrap min-w-0">
-          <h2 className="text-lg sm:text-xl font-bold">{va.title}</h2>
+          <h2 className="text-lg sm:text-xl font-extrabold tracking-tight">{va.title}</h2>
           <span
             data-testid="detected-language-badge"
-            className="px-2.5 py-0.5 rounded-full bg-teal-400/20 border border-teal-300/40 text-teal-200 text-xs font-bold"
+            className="px-2.5 py-0.5 rounded-full bg-blue-400/20 border border-sky-300/50 text-sky-100 text-xs font-extrabold"
           >
             {LANGUAGE_REGISTRY[detectedLang]?.native_name} ({detectedLang.toUpperCase()})
           </span>
           {user && (
             <span
               data-testid="authenticated-citizen-badge"
-              className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-500/25 border border-emerald-300/40 text-emerald-200 text-xs font-bold"
+              className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-500/25 border border-emerald-300/50 text-emerald-100 text-xs font-extrabold"
             >
               <UserCheck className="h-3.5 w-3.5" />
               <span>{user.display_name}</span>
@@ -286,9 +298,9 @@ export function VoiceSaathiOverlay({
             data-testid="voice-auto-interrupt-toggle"
             aria-pressed={autoInterrupt}
             onClick={() => setAutoInterrupt(!autoInterrupt)}
-            className={`px-3 py-1.5 rounded-xl border text-xs font-bold transition ${
+            className={`px-3 py-1.5 rounded-xl border text-xs font-bold transition cursor-pointer ${
               autoInterrupt
-                ? 'bg-emerald-900/70 border-emerald-400/60 text-emerald-100'
+                ? 'bg-blue-700/80 border-sky-300/60 text-white'
                 : 'bg-slate-800/90 border-slate-700 text-slate-300'
             }`}
           >
@@ -297,12 +309,12 @@ export function VoiceSaathiOverlay({
               : `خودکار مداخلت: ${autoInterrupt ? 'آن' : 'آف'}`}
           </button>
 
-          <label className="inline-flex items-center gap-1.5 text-xs bg-slate-800/90 border border-slate-700 px-3 py-1.5 rounded-xl cursor-pointer">
+          <label className="inline-flex items-center gap-1.5 text-xs bg-slate-900/75 border border-blue-700/60 px-3 py-1.5 rounded-xl cursor-pointer font-bold">
             <input
               type="checkbox"
               checked={handsFreeVad}
               onChange={(e) => setHandsFreeVad(e.target.checked)}
-              className="rounded accent-teal-500"
+              className="rounded accent-blue-500"
             />
             <span>{va.handsFreeVad}</span>
           </label>
@@ -310,7 +322,7 @@ export function VoiceSaathiOverlay({
           <button
             type="button"
             onClick={() => handleResetSession()}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-600 text-white text-xs font-bold"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-blue-500/40 text-white text-xs font-bold cursor-pointer"
           >
             <RotateCcw className="h-3.5 w-3.5" />
             <span>{va.resetBtn}</span>
@@ -451,7 +463,7 @@ export function VoiceSaathiOverlay({
       {/* Main Split Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* Left: Large Smooth Voice Orb + Instant Interrupt / Hard Stop + Text & Camera */}
-        <div className="lg:col-span-5 min-w-0 flex flex-col items-center text-center space-y-4 p-5 rounded-2xl bg-slate-950/40 border border-teal-800/40">
+        <div className="lg:col-span-5 min-w-0 flex flex-col items-center text-center space-y-4 p-5 rounded-2xl bg-slate-950/45 border border-blue-600/40">
           {suspendedTasks.length > 0 && (
             <div
               data-testid="suspended-task-banner"
@@ -480,8 +492,8 @@ export function VoiceSaathiOverlay({
             </div>
           )}
 
-          {/* LARGE SMOOTH SPEAK-TO-AGENT VOICE ORB */}
-          <div className="pt-3 pb-1 flex flex-col items-center gap-5">
+          {/* LARGE SMOOTH SPEAK-TO-AGENT VOICE ORB (Identical Shape/Feel — Royal Cobalt Blue Theme) */}
+          <div className="pt-4 pb-1 flex flex-col items-center gap-5">
             <button
               type="button"
               data-testid="voice-orb-btn"
@@ -489,38 +501,49 @@ export function VoiceSaathiOverlay({
               className="relative group focus:outline-none select-none cursor-pointer"
               aria-label={orbState === 'SPEAKING' ? 'Interrupt and Answer' : va.tapToSpeak}
             >
+              {/* Multi-Ring Animated Aura: Royal Blue Pulse (Listening), Warm Amber Wave (Speaking), Crisp Navy-Slate (Stopped) */}
               <span
                 aria-hidden="true"
-                className={`pointer-events-none absolute -inset-4 rounded-full transition-all duration-300 ${
+                className={`pointer-events-none absolute -inset-5 rounded-full border-2 transition-all duration-300 ${
                   orbState === 'LISTENING'
-                    ? 'bg-rose-500/35 animate-ping'
-                    : orbState === 'THINKING'
-                      ? 'bg-amber-400/30 animate-pulse'
-                      : orbState === 'SPEAKING'
-                        ? 'bg-emerald-400/35 animate-ping'
-                        : 'bg-teal-400/20 group-hover:bg-teal-400/35'
+                    ? 'bg-blue-400/25 border-sky-300/80 awaaz-orb-ring'
+                    : orbState === 'SPEAKING'
+                      ? 'bg-amber-400/25 border-amber-300/75 awaaz-orb-ring'
+                      : orbState === 'THINKING'
+                        ? 'bg-blue-400/20 border-amber-300/60 animate-pulse'
+                        : 'bg-blue-400/10 border-blue-400/40 group-hover:border-sky-300/70 group-hover:bg-blue-500/20'
                 }`}
                 style={orbState === 'LISTENING' ? { transform: `scale(${1 + audioLevel / 180})` } : undefined}
+              />
+              <span
+                aria-hidden="true"
+                className={`pointer-events-none absolute -inset-8 rounded-full border transition-all duration-300 ${
+                  orbState === 'LISTENING'
+                    ? 'bg-blue-400/15 border-sky-300/50 awaaz-orb-ring-delayed'
+                    : orbState === 'SPEAKING'
+                      ? 'bg-amber-400/15 border-amber-300/50 awaaz-orb-ring-delayed'
+                      : 'border-transparent'
+                }`}
               />
               <div
                 className={`relative h-44 w-44 sm:h-48 sm:w-48 rounded-full flex flex-col items-center justify-center gap-2 shadow-2xl border-4 transition-transform duration-200 ease-out active:scale-95 ${
                   orbState === 'LISTENING'
-                    ? 'bg-gradient-to-br from-rose-600 to-rose-800 border-rose-300 scale-105'
+                    ? 'bg-gradient-to-br from-[#1D4ED8] via-[#2563EB] to-[#1E3A8A] border-sky-200 ring-4 ring-blue-400/40 scale-105'
                     : orbState === 'THINKING'
-                      ? 'bg-gradient-to-br from-amber-500 to-amber-700 border-amber-200'
+                      ? 'bg-gradient-to-br from-blue-700 via-indigo-800 to-amber-700 border-amber-200 ring-4 ring-amber-400/25'
                       : orbState === 'SPEAKING'
-                        ? 'bg-gradient-to-br from-emerald-600 to-teal-800 border-emerald-300 hover:scale-105'
-                        : 'bg-gradient-to-br from-teal-600 to-emerald-800 border-teal-300 hover:scale-105'
+                        ? 'bg-gradient-to-br from-amber-500 via-amber-600 to-orange-700 border-amber-200 ring-4 ring-amber-400/35 hover:scale-105'
+                        : 'bg-gradient-to-br from-[#0F2D5C] via-[#1D4ED8] to-[#1E3A8A] border-sky-300/80 ring-4 ring-blue-500/25 hover:border-sky-200 hover:scale-105'
                 }`}
               >
                 {orbState === 'LISTENING' ? (
-                  <Square className="h-12 w-12 text-white" />
+                  <Square className="h-12 w-12 text-white drop-shadow-sm" />
                 ) : orbState === 'SPEAKING' ? (
-                  <Volume2 className="h-12 w-12 text-white animate-bounce" />
+                  <Volume2 className="h-12 w-12 text-white animate-bounce drop-shadow-sm" />
                 ) : (
-                  <Mic className="h-12 w-12 text-white" />
+                  <Mic className="h-12 w-12 text-white drop-shadow-sm" />
                 )}
-                <span className="text-sm font-extrabold uppercase tracking-wide px-3">
+                <span className="text-sm sm:text-base font-extrabold uppercase tracking-wide px-3 text-white drop-shadow-xs">
                   {orbState === 'LISTENING'
                     ? va.listening
                     : orbState === 'THINKING'
@@ -535,13 +558,13 @@ export function VoiceSaathiOverlay({
             </button>
 
             {/* Instant Barge-In & Hard Stop Action Row */}
-            <div className="relative z-10 flex flex-wrap items-center justify-center gap-2 min-h-[38px]">
+            <div className="relative z-10 flex flex-wrap items-center justify-center gap-2.5 min-h-[42px]">
               {orbState === 'SPEAKING' && (
                 <button
                   type="button"
                   data-testid="voice-interrupt-btn"
                   onClick={() => void interruptAndListen()}
-                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-extrabold text-xs sm:text-sm shadow-md transition"
+                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-extrabold text-sm shadow-lg border-2 border-amber-200 transition cursor-pointer"
                 >
                   <Hand className="h-4 w-4" />
                   <span>{detectedLang === 'en' ? 'Interrupt & Answer' : 'روک کر جواب دیں'}</span>
@@ -553,7 +576,7 @@ export function VoiceSaathiOverlay({
                   type="button"
                   data-testid="voice-stop-btn"
                   onClick={() => hardStopVoiceAgent()}
-                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-extrabold text-xs sm:text-sm shadow-md border border-rose-300/60 transition"
+                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-extrabold text-sm shadow-lg border-2 border-rose-300/80 transition cursor-pointer"
                 >
                   <VolumeX className="h-4 w-4" />
                   <span>{detectedLang === 'en' ? 'Stop' : 'روکیں'}</span>
@@ -579,13 +602,13 @@ export function VoiceSaathiOverlay({
                 <strong>{va.youSaid}</strong> {lastTranscript}
               </div>
             )}
-            <div className="p-3.5 rounded-2xl bg-teal-900/50 border border-teal-600/50 text-sm sm:text-base font-medium text-teal-50 leading-relaxed space-y-2 break-words">
+            <div className="p-3.5 rounded-2xl bg-blue-900/55 border border-blue-500/50 text-sm sm:text-base font-semibold text-blue-50 leading-relaxed space-y-2 break-words">
               <p data-testid="voice-agent-reply" className="break-words">{agentReply}</p>
               <button
                 type="button"
                 data-testid="voice-replay-btn"
                 onClick={() => void replayCurrentReply()}
-                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-teal-800/80 hover:bg-teal-700 text-xs font-semibold text-teal-100 border border-teal-500/40"
+                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-blue-800/90 hover:bg-blue-700 text-xs font-bold text-sky-100 border border-sky-400/40 cursor-pointer"
               >
                 <Volume2 className="h-3.5 w-3.5" />
                 <span>{va.replayVoice}</span>
@@ -628,50 +651,61 @@ export function VoiceSaathiOverlay({
               value={manualText}
               onChange={(e) => setManualText(e.target.value)}
               placeholder={va.inputPlaceholder}
-              className="flex-1 min-w-0 rounded-xl bg-slate-900/90 border border-teal-700 px-3.5 py-2.5 text-sm text-white placeholder:text-slate-400 focus:outline-none focus:border-teal-400"
+              className="flex-1 min-w-0 rounded-xl bg-slate-900/90 border border-blue-600/70 px-3.5 py-2.5 text-sm text-white placeholder:text-slate-400 focus:outline-none focus:border-sky-400"
             />
             <button
               data-testid="voice-manual-submit"
               type="submit"
               disabled={!manualText.trim() || orbState === 'THINKING'}
-              className="shrink-0 px-4 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 disabled:opacity-40 font-bold text-xs inline-flex items-center gap-1"
+              className="shrink-0 px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-40 font-bold text-xs inline-flex items-center gap-1 cursor-pointer"
             >
               <Send className="h-4 w-4" />
             </button>
           </form>
 
-          {/* Multimodal Camera & Authenticity Buttons */}
-          <div className="w-full grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
+          {/* Multimodal Camera & Authenticity Buttons:
+              - Scan CNIC / Bill is ALWAYS available (needed before & after login to extract Name & CNIC).
+              - Scan Scam SMS is ONLY shown after the user signs in to their portal (not on public Home). */}
+          <div className={`w-full grid grid-cols-1 ${user ? 'sm:grid-cols-2' : ''} gap-2.5 pt-1`}>
             <button
               type="button"
               data-testid="open-doc-scan-modal-btn"
               onClick={() => setDocModalOpen(true)}
-              className="cursor-pointer py-2.5 px-3 rounded-xl bg-teal-700 hover:bg-teal-600 border border-teal-400/40 flex items-center justify-center gap-2 font-bold text-xs"
+              className="cursor-pointer py-2.5 px-3 rounded-xl bg-blue-700 hover:bg-blue-600 border border-sky-400/50 flex items-center justify-center gap-2 font-extrabold text-xs sm:text-sm shadow-sm transition"
             >
               <Camera className="h-4 w-4 shrink-0" />
               <span>{va.scanCnicBill}</span>
             </button>
-            <label className="cursor-pointer py-2.5 px-3 rounded-xl bg-rose-800/90 hover:bg-rose-700 border border-rose-400/40 flex items-center justify-center gap-2 font-bold text-xs">
-              <AlertTriangle className="h-4 w-4 shrink-0" />
-              <span>{va.scanScamSms}</span>
-              <input
-                type="file"
-                accept=".png,.jpg,.jpeg,.webp,.txt"
-                className="hidden"
-                onChange={(e) => void handleImageUpload(e.target.files?.[0] ?? null, 'scam_screenshot')}
-              />
-            </label>
+            {user && (
+              <label
+                data-testid="scan-scam-sms-btn"
+                className="cursor-pointer py-2.5 px-3 rounded-xl bg-rose-800/90 hover:bg-rose-700 border border-rose-400/40 flex items-center justify-center gap-2 font-extrabold text-xs sm:text-sm shadow-sm transition"
+              >
+                <AlertTriangle className="h-4 w-4 shrink-0" />
+                <span>{va.scanScamSms}</span>
+                <input
+                  type="file"
+                  accept=".png,.jpg,.jpeg,.webp,.txt"
+                  className="hidden"
+                  onChange={(e) => void handleImageUpload(e.target.files?.[0] ?? null, 'scam_screenshot')}
+                />
+              </label>
+            )}
           </div>
         </div>
 
-        {/* Right: Clean, Simple Contextual Workspace (NO MCP trace or technical cognitive logs!) */}
-        <div className="lg:col-span-7 min-w-0 rounded-2xl bg-white text-slate-900 p-5 space-y-4 shadow-lg">
+        {/* Right: Clean, Simple Contextual Workspace (or route-specific Auth/Helper form in rightSlot while Left Voice Panel stays persistently mounted!) */}
+        <div className="lg:col-span-7 min-w-0 rounded-2xl bg-white/98 text-slate-950 p-5 space-y-4 shadow-lg border border-blue-100">
+          {rightSlot ? (
+            <div className="space-y-4">{rightSlot}</div>
+          ) : (
+            <>
           {/* HOME WELCOME / ROLE SELECTION */}
           {(workflowStage === 'HOME_WELCOME' || workflowStage === 'ROLE_IDENTIFICATION' || workflowStage === 'LANGUAGE_SELECT') && !user && (
             <div data-testid="stage-home-welcome" className="space-y-5">
-              <div className="border-b border-slate-200 pb-3">
-                <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2">
-                  <Users className="h-5 w-5 text-teal-700" />
+              <div className="border-b border-blue-100 pb-3">
+                <h3 className="text-lg font-extrabold text-slate-950 flex items-center gap-2">
+                  <Users className="h-5 w-5 text-blue-700" />
                   <span>{detectedLang === 'en' ? 'Who are you?' : 'آپ کون ہیں؟'}</span>
                 </h3>
               </div>
@@ -681,38 +715,38 @@ export function VoiceSaathiOverlay({
                   type="button"
                   data-testid="quick-role-citizen"
                   onClick={() => void sendSessionTurn({ transcript: 'I am a normal citizen', autoReopenMic: false })}
-                  className="p-4 rounded-2xl border-2 border-teal-200 bg-teal-50/60 hover:border-teal-600 hover:bg-teal-100 text-start transition"
+                  className="p-4 rounded-2xl border-2 border-blue-200 bg-blue-50/70 hover:border-blue-600 hover:bg-blue-100/80 text-start transition cursor-pointer"
                 >
-                  <div className="font-bold text-base text-teal-950">{va.roleQuickCitizen}</div>
+                  <div className="font-extrabold text-base text-blue-950">{va.roleQuickCitizen}</div>
                 </button>
                 <button
                   type="button"
                   data-testid="quick-role-officer"
                   onClick={() => void sendSessionTurn({ transcript: 'I am a department officer', autoReopenMic: false })}
-                  className="p-4 rounded-2xl border-2 border-slate-200 hover:border-teal-600 hover:bg-slate-50 text-start transition"
+                  className="p-4 rounded-2xl border-2 border-slate-200 hover:border-blue-600 hover:bg-blue-50/50 text-start transition cursor-pointer"
                 >
-                  <div className="font-bold text-base text-slate-900">{va.roleQuickOfficer}</div>
+                  <div className="font-extrabold text-base text-slate-950">{va.roleQuickOfficer}</div>
                 </button>
                 <button
                   type="button"
                   data-testid="quick-role-admin"
                   onClick={() => void sendSessionTurn({ transcript: 'I am an admin', autoReopenMic: false })}
-                  className="p-4 rounded-2xl border-2 border-slate-200 hover:border-teal-600 hover:bg-slate-50 text-start transition"
+                  className="p-4 rounded-2xl border-2 border-slate-200 hover:border-blue-600 hover:bg-blue-50/50 text-start transition cursor-pointer"
                 >
-                  <div className="font-bold text-base text-slate-900">{va.roleQuickAdmin}</div>
+                  <div className="font-extrabold text-base text-slate-950">{va.roleQuickAdmin}</div>
                 </button>
                 <button
                   type="button"
                   data-testid="quick-role-helper"
                   onClick={() => void sendSessionTurn({ transcript: 'I am a community helper', autoReopenMic: false })}
-                  className="p-4 rounded-2xl border-2 border-slate-200 hover:border-teal-600 hover:bg-slate-50 text-start transition"
+                  className="p-4 rounded-2xl border-2 border-slate-200 hover:border-blue-600 hover:bg-blue-50/50 text-start transition cursor-pointer"
                 >
-                  <div className="font-bold text-base text-slate-900">{va.roleQuickHelper}</div>
+                  <div className="font-extrabold text-base text-slate-950">{va.roleQuickHelper}</div>
                 </button>
               </div>
 
-              <div className="pt-2 border-t border-slate-100">
-                <div className="text-xs font-semibold text-slate-500 mb-2">{dict.selectLanguage}</div>
+              <div className="pt-2 border-t border-blue-100">
+                <div className="text-xs font-bold text-slate-600 mb-2">{dict.selectLanguage}</div>
                 <div className="flex flex-wrap gap-2">
                   {LANGUAGE_LIST.map((entry) => (
                     <button
@@ -723,10 +757,10 @@ export function VoiceSaathiOverlay({
                         setLanguage(entry.language_code);
                         setActivated(true);
                       }}
-                      className={`px-3 py-1.5 rounded-xl border text-xs font-bold transition ${
+                      className={`px-3 py-1.5 rounded-xl border-2 text-xs font-extrabold transition cursor-pointer ${
                         detectedLang === entry.language_code
-                          ? 'bg-teal-700 text-white border-teal-700'
-                          : 'bg-slate-50 text-slate-800 border-slate-200 hover:border-teal-500'
+                          ? 'bg-blue-700 text-white border-blue-700'
+                          : 'bg-blue-50/50 text-slate-900 border-blue-200 hover:border-blue-500'
                       }`}
                     >
                       {entry.native_name}
@@ -1228,7 +1262,7 @@ export function VoiceSaathiOverlay({
                   {formState.decision_tier && (
                     <span
                       data-testid="receipt-decision-tier-badge"
-                      className="px-2.5 py-1 rounded-lg bg-teal-800 text-white font-bold text-xs"
+                      className="px-2.5 py-1 rounded-lg bg-[#1D4ED8] text-white font-bold text-xs"
                     >
                       {formState.decision_tier}
                     </span>
@@ -1276,11 +1310,13 @@ export function VoiceSaathiOverlay({
           {policyAnswer?.answer && (
             <div
               data-testid="policy-answer-banner"
-              className="p-3.5 rounded-xl bg-indigo-50 border border-indigo-300 text-indigo-950 text-xs space-y-1"
+              className="p-3.5 rounded-xl bg-blue-50 border border-blue-300 text-blue-950 text-xs space-y-1"
             >
               <div className="font-bold">{va.policyAnswerTitle}</div>
               <p>{policyAnswer.answer}</p>
             </div>
+          )}
+            </>
           )}
         </div>
       </div>
@@ -1294,12 +1330,20 @@ export function VoiceSaathiOverlay({
         />
       )}
 
-      {/* Challenge 08: Forged Document vs Honest False-Alarm Authenticity Modal */}
+      {/* Challenge 08: Forged Document vs Honest False-Alarm Authenticity Modal + CNIC/Name Auto-Extraction */}
       <DocumentAuthenticityModal
         open={docModalOpen}
         onClose={() => setDocModalOpen(false)}
         language={detectedLang}
         onSendToVoiceAgent={(file) => void handleImageUpload(file, 'mock_identity_document')}
+        onFieldsExtracted={(fields) => {
+          const parts: string[] = [];
+          if (fields.full_name) parts.push(`Mera naam ${fields.full_name} hai`);
+          if (fields.cnic) parts.push(`CNIC ${fields.cnic}`);
+          if (parts.length > 0 && workflowStage !== 'HOME_WELCOME') {
+            void sendSessionTurn({ transcript: parts.join(', '), autoReopenMic: false });
+          }
+        }}
       />
     </section>
   );

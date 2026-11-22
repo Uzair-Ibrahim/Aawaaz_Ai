@@ -111,16 +111,34 @@ export class AuthService {
     }
 
     // Isolated local-dev auth mode (strictly blocked in NODE_ENV=production by env.ts)
-    const cred = await this.store.getLocalCredentialByEmail?.(normalizedEmail);
-    if (!cred || !verifyPassword(password, cred.password_hash)) {
+    const digitsOnly = normalizedEmail.replace(/\D/g, '');
+    const formattedCnic =
+      digitsOnly.length === 13
+        ? `${digitsOnly.slice(0, 5)}-${digitsOnly.slice(5, 12)}-${digitsOnly.slice(12)}`
+        : null;
+    const candidateKeys = [
+      normalizedEmail,
+      ...(formattedCnic ? [formattedCnic, digitsOnly] : []),
+      `pin:${normalizedEmail}`,
+      ...(formattedCnic ? [`pin:${formattedCnic}`, `pin:${digitsOnly}`] : []),
+    ];
+    let matchedCred: { user_id: string; email: string; password_hash: string } | null = null;
+    for (const key of candidateKeys) {
+      const candidate = await this.store.getLocalCredentialByEmail?.(key);
+      if (candidate && verifyPassword(password, candidate.password_hash)) {
+        matchedCred = candidate;
+        break;
+      }
+    }
+    if (!matchedCred) {
       throw new AppError(401, 'INVALID_CREDENTIALS', 'Invalid email or password.');
     }
 
     const token = signDevToken(
-      { sub: cred.user_id, email: cred.email },
+      { sub: matchedCred.user_id, email: matchedCred.email },
       this.env.DEV_AUTH_SECRET,
     );
-    const sessionUser = await this.buildSessionUser(cred.user_id);
+    const sessionUser = await this.buildSessionUser(matchedCred.user_id);
     return { accessToken: token, user: sessionUser };
   }
 

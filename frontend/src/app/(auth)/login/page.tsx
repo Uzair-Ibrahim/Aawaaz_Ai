@@ -3,7 +3,9 @@
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { Sparkles } from 'lucide-react';
+import { Camera, CheckCircle2, Sparkles } from 'lucide-react';
+import { DocumentAuthenticityModal } from '@/components/citizen/CitizenRubricDrawers';
+import { AwaazLogo } from '@/components/shared/AwaazLogo';
 import { useVoiceAgent } from '@/components/voice/GlobalVoiceSaathiProvider';
 import { ApiClientError } from '@/lib/api/client';
 import { useAuth } from '@/lib/auth/context';
@@ -22,6 +24,8 @@ export default function LoginPage() {
   const [displayName, setDisplayName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [scanModalOpen, setScanModalOpen] = useState(false);
+  const [scannedInfo, setScannedInfo] = useState<{ full_name?: string; cnic?: string } | null>(null);
 
   // Live auto-fill from Voice Saathi spoken credentials!
   useEffect(() => {
@@ -69,26 +73,30 @@ export default function LoginPage() {
   };
 
   return (
-    <div data-testid="login-page" className="max-w-lg mx-auto py-4 space-y-6">
-      <div className="rounded-2xl bg-white border border-slate-200 p-6 shadow-xs space-y-5">
+    <div data-testid="login-page" className="w-full space-y-5">
+      <div className="rounded-2xl bg-white border-2 border-blue-200/80 p-5 sm:p-6 shadow-sm space-y-5">
+        <div className="flex flex-col items-center text-center gap-2 pb-3 border-b border-blue-100">
+          <AwaazLogo size="lg" showWordmark title={dict.appTitle} subtitle={dict.appTagline} />
+        </div>
+
         <div className="flex items-center justify-between flex-wrap gap-2">
-          <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-teal-50 border border-teal-200 text-teal-800 text-xs font-bold">
-            <Sparkles className="h-3.5 w-3.5" />
+          <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-blue-50 border border-blue-300 text-blue-950 text-xs font-extrabold">
+            <Sparkles className="h-3.5 w-3.5 text-blue-700" />
             <span>{dict.auth.voiceAutoFillingBadge}</span>
           </div>
           {authDraft.target_role && (
-            <span className="px-2.5 py-1 rounded-full bg-indigo-50 border border-indigo-200 text-indigo-800 text-xs font-bold">
+            <span className="px-3 py-1 rounded-full bg-indigo-50 border border-indigo-300 text-indigo-900 text-xs font-extrabold">
               {roleLabel(authDraft.target_role)}
             </span>
           )}
         </div>
 
-        <div className="flex rounded-xl bg-slate-100 p-1">
+        <div className="flex rounded-xl bg-blue-50/80 border border-blue-200/80 p-1">
           <button
             type="button"
             onClick={() => setMode('login')}
-            className={`flex-1 py-2 rounded-lg text-sm font-semibold transition ${
-              mode === 'login' ? 'bg-white text-teal-800 shadow-xs' : 'text-slate-600'
+            className={`flex-1 py-2 rounded-lg text-sm font-extrabold transition cursor-pointer ${
+              mode === 'login' ? 'bg-blue-700 text-white shadow-xs' : 'text-slate-700 hover:text-blue-900'
             }`}
           >
             {dict.auth.signInTab}
@@ -96,8 +104,8 @@ export default function LoginPage() {
           <button
             type="button"
             onClick={() => setMode('register')}
-            className={`flex-1 py-2 rounded-lg text-sm font-semibold transition ${
-              mode === 'register' ? 'bg-white text-teal-800 shadow-xs' : 'text-slate-600'
+            className={`flex-1 py-2 rounded-lg text-sm font-extrabold transition cursor-pointer ${
+              mode === 'register' ? 'bg-blue-700 text-white shadow-xs' : 'text-slate-700 hover:text-blue-900'
             }`}
           >
             {dict.auth.createAccountTab}
@@ -105,6 +113,33 @@ export default function LoginPage() {
         </div>
 
         <form onSubmit={(e) => void handleSubmit(e)} className="space-y-4">
+          {/* Scan CNIC / Bill right on Login / Register to auto-extract CNIC Number & Full Name! */}
+          <div className="space-y-2">
+            <button
+              type="button"
+              data-testid="login-scan-cnic-btn"
+              onClick={() => setScanModalOpen(true)}
+              className="w-full py-2.5 px-4 rounded-xl bg-blue-50 hover:bg-blue-100 border-2 border-blue-400 text-blue-950 font-extrabold text-sm flex items-center justify-center gap-2 transition cursor-pointer"
+            >
+              <Camera className="h-4 w-4 text-blue-700" />
+              <span>{dict.voiceAgent.scanCnicBill} — {language === 'en' ? 'Auto-Fill CNIC & Name' : 'شناختی کارڈ اور نام خودکار بھریں'}</span>
+            </button>
+            {scannedInfo && (scannedInfo.full_name || scannedInfo.cnic) && (
+              <div
+                data-testid="login-extracted-banner"
+                className="flex items-center gap-2 px-3 py-2 rounded-xl bg-emerald-50 border border-emerald-300 text-emerald-950 text-xs font-bold"
+              >
+                <CheckCircle2 className="h-4 w-4 text-emerald-700 shrink-0" />
+                <span>
+                  {language === 'en' ? 'Extracted:' : 'حاصل شدہ:'}{' '}
+                  {scannedInfo.full_name ? `${scannedInfo.full_name}` : ''}
+                  {scannedInfo.full_name && scannedInfo.cnic ? ' • ' : ''}
+                  {scannedInfo.cnic ? <span dir="ltr" className="font-mono">{scannedInfo.cnic}</span> : ''}
+                </span>
+              </div>
+            )}
+          </div>
+
           {mode === 'register' && (
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">
@@ -162,14 +197,14 @@ export default function LoginPage() {
             data-testid="login-submit-btn"
             type="submit"
             disabled={submitting}
-            className="w-full py-3 rounded-xl bg-teal-700 text-white font-semibold text-base hover:bg-teal-800 disabled:opacity-60"
+            className="w-full py-3 rounded-xl bg-blue-700 text-white font-extrabold text-base hover:bg-blue-800 disabled:opacity-60 shadow-sm transition cursor-pointer"
           >
             {submitting ? dict.loading : mode === 'login' ? dict.auth.signInTab : dict.auth.createAccountTab}
           </button>
         </form>
 
-        <div className="text-center pt-2 border-t border-slate-100">
-          <Link href="/signup" className="text-sm font-semibold text-teal-700 hover:underline">
+        <div className="text-center pt-2 border-t border-blue-100">
+          <Link href="/signup" className="text-sm font-extrabold text-blue-700 hover:underline">
             {dict.auth.noAccountYet}
           </Link>
         </div>
@@ -203,6 +238,17 @@ export default function LoginPage() {
           </div>
         </div>
       )}
+
+      <DocumentAuthenticityModal
+        open={scanModalOpen}
+        onClose={() => setScanModalOpen(false)}
+        language={language}
+        onFieldsExtracted={(fields) => {
+          setScannedInfo({ full_name: fields.full_name, cnic: fields.cnic });
+          if (fields.cnic && mode === 'login') setEmail(fields.cnic);
+          if (fields.full_name) setDisplayName(fields.full_name);
+        }}
+      />
     </div>
   );
 }

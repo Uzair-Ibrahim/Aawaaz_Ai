@@ -26,6 +26,7 @@ import type { AppEnv } from '../../config/env';
 import type { AuditService } from '../../core/audit/audit-service';
 import type { AuthService } from '../../core/auth/auth-service';
 import { SESSION_COOKIE_NAME } from '../../core/auth/middleware';
+import { DEFAULT_ORG_IDS } from '../../core/database/seed-data';
 import type { DataStore } from '../../core/database/types';
 import type { BackendFeatureModule } from '../../core/modules/registry';
 import type { NotificationService } from '../../core/notifications/notification-service';
@@ -68,7 +69,7 @@ export function createReliefAssistanceModule(deps: {
   const ruleEngineService = new DynamicRuleEngineService(audit);
   const entityResolutionService = new EntityResolutionService(store);
   const consentEnforcementService = new ConsentEnforcementService(store, audit);
-  const documentForgeryService = new DocumentForgeryService(store, audit);
+  const documentForgeryService = new DocumentForgeryService(store, audit, aiProvider);
   const caseService = new CaseService(
     store,
     consentService,
@@ -1645,9 +1646,11 @@ export function createReliefAssistanceModule(deps: {
       }
     });
 
-    // Module 5: Forged Document Detection + Honest False-Alarm Handling & Metrics
-    router.post('/documents/analyze-authenticity', requireAuth, async (req, res, next) => {
+    // Module 5: Forged Document Detection + Honest False-Alarm Handling & CNIC/Name Extraction
+    // Supports optional auth so citizens can scan their CNIC before logging in (/login, /signup, /) as well as inside /citizen!
+    router.post('/documents/analyze-authenticity', optionalVoiceAuth, async (req, res, next) => {
       try {
+        const orgId = req.auth?.organizationId ?? DEFAULT_ORG_IDS.RELIEF_DEMO;
         const body = z
           .object({
             image_base64: z.string().optional(),
@@ -1660,7 +1663,7 @@ export function createReliefAssistanceModule(deps: {
           .parse(req.body ?? {});
         const analysis = await documentForgeryService.analyzeDocument(
           req.auth,
-          req.auth!.organizationId,
+          orgId,
           body,
         );
         res.json({ analysis });

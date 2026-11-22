@@ -377,17 +377,19 @@ export default function OfficerDashboardPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-white/95 backdrop-blur-xs border-2 border-blue-200/90 p-5 shadow-sm">
         <div>
           <div className="flex items-center gap-2.5 flex-wrap">
-            <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
-              <ClipboardCheck className="h-6 w-6 text-teal-700" />
+            <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-slate-950 flex items-center gap-2.5">
+              <span className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-blue-700 text-white shadow-xs">
+                <ClipboardCheck className="h-5 w-5" />
+              </span>
               {dict.officer.title}
             </h1>
             {officerDepartment && (
               <span
                 data-testid="officer-department-badge"
-                className="px-3 py-1 rounded-full bg-indigo-100 text-indigo-900 border border-indigo-200 text-xs font-bold"
+                className="px-3.5 py-1 rounded-full bg-indigo-100 text-indigo-950 border-2 border-indigo-300 text-xs font-extrabold"
               >
                 Department: {officerDepartment}
               </span>

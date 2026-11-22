@@ -373,13 +373,37 @@ export class MemoryDataStore implements DataStore {
         email: p.email.toLowerCase(),
         password_hash: passHash,
       });
+      if (p.cnic) {
+        const cnicLower = p.cnic.toLowerCase();
+        const cnicDigits = p.cnic.replace(/\D/g, '');
+        this.localCredentials.set(cnicLower, {
+          user_id: p.id,
+          email: p.email.toLowerCase(),
+          password_hash: passHash,
+        });
+        if (cnicDigits.length === 13) {
+          this.localCredentials.set(cnicDigits, {
+            user_id: p.id,
+            email: p.email.toLowerCase(),
+            password_hash: passHash,
+          });
+        }
+      }
       if (p.pin && p.cnic) {
         const pinHash = hashPassword(p.pin);
+        const cnicDigits = p.cnic.replace(/\D/g, '');
         this.localCredentials.set(`pin:${p.cnic.toLowerCase()}`, {
           user_id: p.id,
           email: p.email.toLowerCase(),
           password_hash: pinHash,
         });
+        if (cnicDigits.length === 13) {
+          this.localCredentials.set(`pin:${cnicDigits}`, {
+            user_id: p.id,
+            email: p.email.toLowerCase(),
+            password_hash: pinHash,
+          });
+        }
         if (p.phone) {
           this.localCredentials.set(`pin:${p.phone.toLowerCase()}`, {
             user_id: p.id,

@@ -5,6 +5,7 @@ import { getIntegrationStatus, type AppEnv } from '../../config/env';
 import type { AuditService } from '../audit/audit-service';
 import type { AuthService } from '../auth/auth-service';
 import { SESSION_COOKIE_NAME } from '../auth/middleware';
+import type { SupabaseServerRuntime } from '../database/supabase-server-client';
 import type { DataStore } from '../database/types';
 import type { ModuleRegistry } from '../modules/registry';
 import type { NotificationService } from '../notifications/notification-service';
@@ -84,9 +85,10 @@ export function createSaasRouter(deps: {
   audit: AuditService;
   notifications: NotificationService;
   moduleRegistry: ModuleRegistry;
+  supabaseRuntime?: SupabaseServerRuntime;
 }): Router {
   const router = Router();
-  const { env, store, authService, requireAuth, audit, notifications, moduleRegistry } = deps;
+  const { env, store, authService, requireAuth, audit, notifications, moduleRegistry, supabaseRuntime } = deps;
 
   const setSessionCookie = (res: Response, token: string): void => {
     res.cookie(SESSION_COOKIE_NAME, token, {
@@ -99,9 +101,13 @@ export function createSaasRouter(deps: {
 
   // --- Public Health & Platform Status ---
   router.get('/health', (_req, res) => {
+    const sbHealth = supabaseRuntime?.getHealthSnapshot();
     res.json({
       status: 'ok',
       service: 'awaaz-backend',
+      storage: sbHealth?.storage ?? (env.DATA_STORE_MODE === 'supabase' ? 'supabase' : 'memory'),
+      database: sbHealth?.database ?? (env.DATA_STORE_MODE === 'supabase' ? 'connected' : 'fallback_memory'),
+      supabase: sbHealth ?? null,
       prototype_notice: 'Synthetic data only. Not an official government service.',
       integrations: getIntegrationStatus(env),
       modules: moduleRegistry.listManifests(),

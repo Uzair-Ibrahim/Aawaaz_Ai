@@ -462,13 +462,15 @@ export default function AdminDashboardPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between flex-wrap gap-3">
+      <div className="flex items-center justify-between flex-wrap gap-3 rounded-2xl bg-white/95 backdrop-blur-xs border-2 border-blue-200/90 p-5 shadow-sm">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
-            <Settings2 className="h-6 w-6 text-teal-700" />
+          <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-slate-950 flex items-center gap-2.5">
+            <span className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-blue-700 text-white shadow-xs">
+              <Settings2 className="h-5 w-5" />
+            </span>
             {dict.admin.superAdminTitle}
           </h1>
-          <p className="text-sm text-slate-600">
+          <p className="text-sm font-bold text-slate-700 mt-1">
             {formatText(dict.admin.superAdminSubtitle, { org: user.active_organization.name })}
           </p>
         </div>
@@ -476,26 +478,26 @@ export default function AdminDashboardPage() {
           <button
             type="button"
             onClick={() => void loadAdminData()}
-            className="px-4 py-2 rounded-xl border border-slate-300 bg-white text-sm font-semibold hover:bg-slate-50"
+            className="px-4 py-2 rounded-xl border-2 border-slate-300 bg-white text-slate-900 text-sm font-extrabold hover:bg-blue-50 transition cursor-pointer"
           >
             {dict.refresh}
           </button>
-          <Link href="/workspace" className="px-4 py-2 rounded-xl border border-slate-300 bg-white text-sm font-semibold">
+          <Link href="/workspace" className="px-4 py-2 rounded-xl border-2 border-blue-300 bg-blue-50 text-blue-950 text-sm font-extrabold hover:bg-blue-100 transition">
             {dict.admin.manageUsersLink}
           </Link>
         </div>
       </div>
 
-      {/* Admin Navigation Tabs: Overview | AI Escalated Requests | Agent Reasoning & Audit Trail */}
-      <div className="flex flex-wrap gap-2 border-b border-slate-200 pb-3">
+      {/* Admin Navigation Tabs: Overview | Live Policy Rules | AI Escalated Requests | Agent Reasoning & Audit Trail */}
+      <div className="flex flex-wrap gap-2 border-b border-blue-200 pb-3">
         <button
           type="button"
           data-testid="admin-tab-overview"
           onClick={() => setActiveTab('overview')}
-          className={`px-4 py-2 rounded-xl text-sm font-bold transition ${
+          className={`px-4 py-2 rounded-xl text-sm font-extrabold transition cursor-pointer ${
             activeTab === 'overview'
-              ? 'bg-teal-700 text-white shadow-xs'
-              : 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-50'
+              ? 'bg-blue-700 text-white shadow-xs'
+              : 'bg-white border-2 border-blue-200 text-slate-800 hover:bg-blue-50'
           }`}
         >
           Overview &amp; Applications ({submittedCases.length})
@@ -504,10 +506,10 @@ export default function AdminDashboardPage() {
           type="button"
           data-testid="admin-tab-live-rules"
           onClick={() => setActiveTab('live-rules')}
-          className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-bold transition ${
+          className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-extrabold transition cursor-pointer ${
             activeTab === 'live-rules'
-              ? 'bg-cyan-700 text-white shadow-xs'
-              : 'bg-white border border-cyan-300 text-cyan-950 hover:bg-cyan-50'
+              ? 'bg-blue-800 text-white shadow-xs'
+              : 'bg-white border-2 border-blue-300 text-blue-950 hover:bg-blue-50'
           }`}
         >
           <Settings2 className="h-4 w-4" />

@@ -1,4 +1,21 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect width="64" height="64" rx="14" fill="#0f766e"/>
-  <text x="50%" y="54%" dominant-baseline="middle" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="34" font-weight="700">آ</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="awaaz-bg" x1="6" y1="4" x2="58" y2="60" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0F2D5C"/>
+      <stop offset="55%" stop-color="#1D4ED8"/>
+      <stop offset="100%" stop-color="#2563EB"/>
+    </linearGradient>
+    <linearGradient id="awaaz-gold" x1="16" y1="10" x2="48" y2="54" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#F59E0B"/>
+      <stop offset="100%" stop-color="#D97706"/>
+    </linearGradient>
+  </defs>
+  <path d="M32 3.5L54.5 11.2C56.6 11.9 58 13.9 58 16.1V32.4C58 46.2 47.4 55.9 33.7 60.2C32.6 60.6 31.4 60.6 30.3 60.2C16.6 55.9 6 46.2 6 32.4V16.1C6 13.9 7.4 11.9 9.5 11.2L32 3.5Z" fill="url(#awaaz-bg)" stroke="#60A5FA" stroke-opacity="0.55" stroke-width="1.5"/>
+  <path d="M21.5 18.5C24.5 15 28.5 15 32 17.4C35.5 19.8 39.5 19.6 42.5 16.3" stroke="url(#awaaz-gold)" stroke-width="3.6" stroke-linecap="round"/>
+  <rect x="29.6" y="21.5" width="4.8" height="25.5" rx="2.4" fill="#FFFFFF"/>
+  <rect x="21.4" y="26.5" width="4.2" height="15.5" rx="2.1" fill="#DBEAFE"/>
+  <rect x="38.4" y="26.5" width="4.2" height="15.5" rx="2.1" fill="#DBEAFE"/>
+  <rect x="14.2" y="30.5" width="3.6" height="8" rx="1.8" fill="#F59E0B"/>
+  <rect x="46.2" y="30.5" width="3.6" height="8" rx="1.8" fill="#F59E0B"/>
+  <circle cx="32" cy="51.2" r="2.3" fill="#F59E0B"/>
 </svg>

@@ -114,6 +114,7 @@ export interface VoiceSessionTurnResult {
   auth_draft: AgentAuthDraft;
   field_fill_history: string[];
   editing_field: string | null;
+  currently_asked_field?: string | null;
   validation_errors: AgentValidationError[];
   access_control_decision: AgentReasoningAuditLogRecord['access_control_decision'];
   capability_check: 'IN_SCOPE' | 'OUT_OF_SCOPE_ESCALATED';
@@ -262,7 +263,18 @@ export function validateFullName(raw: string): { valid: boolean; value?: string;
   if (!/^[A-Za-z\u0600-\u06FF\u0750-\u077F\u0A00-\u0A7F\s.'-]+$/.test(trimmed)) {
     return { valid: false, error: 'Full name must contain alphabetic characters only.' };
   }
-  if (/^(yes|no|ok|haan|ji|signup|login|naya account|new account)$/i.test(trimmed)) {
+  // Strictly reject yes/no confirmations, account-check replies, CNIC/field keywords, and conversational fillers!
+  if (
+    /^(yes|yes please|no|no thanks|ok|okay|sure|fine|haan|han|haan ji|han ji|ji|ji haan|ji han|jee|bilkul|theek|theek hai|thik hai|nahi|nahin|nahi bana|bana nahi|bana hua hai|account|mera account|naya account|new account|create account|create new account|bana dein|banao|signup|sign up|login|log in|register|cnic|phone|pin|cancel|stop|ruk jao|bas)$/i.test(
+      trimmed,
+    ) ||
+    /^(ہاں|جی|جی ہاں|ہاں جی|نہیں|بالکل|ٹھیک|ٹھیک ہے|اکاؤنٹ|نیا اکاؤنٹ|اکاؤنٹ نہیں بنا|بنا دیں|نہیں بنا|شناختی کارڈ|لاگ ان|بس|رک جاؤ)$/.test(
+      trimmed,
+    ) ||
+    /\b(account|naya\s+account|new\s+account|bana\s+dein|nahi\s+bana|not\s+created|already\s+have|sign\s*up|log\s*in)\b/i.test(
+      trimmed,
+    )
+  ) {
     return { valid: false, error: 'Please provide your actual full name (at least 3 letters).' };
   }
   return { valid: true, value: trimmed };
@@ -1523,8 +1535,9 @@ export class VoiceAgentService {
       }
     }
 
-    // 4. Full Name (zero-filler colloquial normalizer!)
-    if (!draft.full_name || allowOverwrite.has('full_name')) {
+    // 4. Full Name (zero-filler colloquial normalizer + STRICT monotonic lock once captured!)
+    const isFullNameLocked = Boolean(draft.full_name.trim()) && !allowOverwrite.has('full_name');
+    if (!isFullNameLocked) {
       const hasNameCue =
         /(?:mera\s+naam|my\s+name\s+is|i\s+am|name\s*:|bol\s+raha|bol\s+rahi|میرا نام|میرا ناں|منهنجو نالو|زما نوم|منی نام)/i.test(
           raw,
@@ -1536,7 +1549,7 @@ export class VoiceAgentService {
           if (check.valid && check.value) {
             draft.full_name = check.value;
             updated.push('full_name');
-          } else {
+          } else if (expectedField === 'full_name') {
             validationErrors.push({
               field: 'full_name',
               message: check.error ?? 'Full name must be 3–80 alphabetic characters.',
@@ -2204,16 +2217,37 @@ export class VoiceAgentService {
                   : 'خبردار! اپ لوڈ کیے گئے اسکرین شاٹ میں فراڈ کے آثار ہیں۔ کبھی بھی OTP کوڈ یا کوئی فیس نہ دیں۔';
             } else if (docRes?.extracted_fields && typeof docRes.extracted_fields === 'object') {
               const ef = docRes.extracted_fields as Record<string, unknown>;
+              const extractedName = typeof ef.full_name === 'string' && ef.full_name.trim() ? ef.full_name.trim() : undefined;
+              const extractedCnic =
+                (typeof ef.mock_identity_reference === 'string' && ef.mock_identity_reference.trim()) ||
+                (typeof ef.cnic === 'string' && ef.cnic.trim()) ||
+                undefined;
               const mutated = monotonicMergeFormState(formState, {
-                name: typeof ef.full_name === 'string' ? ef.full_name : undefined,
-                cnic: typeof ef.mock_identity_reference === 'string' ? ef.mock_identity_reference : undefined,
+                name: extractedName,
+                cnic: extractedCnic,
                 district: typeof ef.district === 'string' ? ef.district : undefined,
                 monthly_income: typeof ef.monthly_income === 'number' ? ef.monthly_income : undefined,
                 household_size: typeof ef.household_size === 'number' ? ef.household_size : undefined,
               });
+              // Also sync extracted Name & CNIC directly into auth_draft so /login and /signup auto-fill immediately!
+              if (extractedName) memory.auth_draft.full_name = extractedName;
+              if (extractedCnic) {
+                memory.auth_draft.cnic = extractedCnic;
+                if (!memory.auth_draft.identifier) memory.auth_draft.identifier = extractedCnic;
+              }
               for (const f of mutated) pushFillHistory(memory.field_fill_history!, f);
               memoryAction = 'SAVED';
-              memorySummary = 'Populated form draft fields from multimodal document extraction.';
+              memorySummary = 'Populated form & auth draft fields from multimodal CNIC/document extraction.';
+              if (extractedName || extractedCnic) {
+                const summaryParts = [
+                  extractedName ? `Name: ${extractedName}` : null,
+                  extractedCnic ? `CNIC: ${extractedCnic}` : null,
+                ].filter(Boolean);
+                replyText =
+                  lang === 'en'
+                    ? `CNIC / document scanned! Extracted ${summaryParts.join(', ')} and filled your details automatically.`
+                    : `شناختی کارڈ / دستاویز اسکین ہو گئی! ${summaryParts.join('، ')} خودکار طور پر درج کر دیا گیا ہے۔`;
+              }
             }
           }
 
@@ -2276,10 +2310,17 @@ export class VoiceAgentService {
             const isPolicyIntent =
               /\b(who is eligible|income limit|what documents|policy|rules|eligibility)\b/i.test(transcript) ||
               /(کون اہل ہے|کتنی آمدنی والا|کون سے کاغذات|پالیسی کیا ہے|اہلیت کیا ہے)/.test(transcript);
+            const isSubmitConfirmationPhrase =
+              memory.workflow_stage === 'RELIEF_FORM' &&
+              computeMissingFields(formState).length === 1 &&
+              computeMissingFields(formState)[0] === 'consent_confirmed' &&
+              (/\b(yes|haan|han|confirm|submit|jama\s+kar|agree|proceed|ok|theek)\b/i.test(transcript) ||
+                /(ہاں|جی|تصدیق|جمع کرائیں)/.test(transcript));
             const isStatusIntent =
-              /\b(claim\s+status|check\s+status|status\s+check|mera\s+status|meri\s+status|application\s+status|application\s+ka\s+status|my\s+status|my\s+applications?|track\s+claim|status\s+batao|AWZ-[A-Z0-9]+)\b/i.test(
+              !isSubmitConfirmationPhrase &&
+              (/\b(claim\s+status|check\s+status|status\s+check|mera\s+status|meri\s+status|application\s+status|application\s+ka\s+status|my\s+status|check\s+my\s+applications?|show\s+my\s+applications?|my\s+applications|track\s+claim|status\s+batao|AWZ-[A-Z0-9]+)\b/i.test(
                 transcript,
-              ) || /(درخواست کا اسٹیٹس|درخواست کی حیثیت|اسٹیٹس بتائیں|اسٹیٹس بتاؤ|اسٹیٹس چیک|حالت بتائیں)/.test(transcript);
+              ) || /(درخواست کا اسٹیٹس|درخواست کی حیثیت|اسٹیٹس بتائیں|اسٹیٹس بتاؤ|اسٹیٹس چیک|حالت بتائیں)/.test(transcript));
 
             const isCheckOfficerReplyIntent =
               /\b(officer\s+ka\s+jawab|officer\s+ne\s+kya\s+jawab|officer\s+reply|officer\s+replied|officer\s+messages?|did\s+officer\s+reply|afsar\s+ka\s+jawab|jawab\s+aaya)\b/i.test(
@@ -2687,9 +2728,31 @@ export class VoiceAgentService {
             uiAction = 'NAVIGATE_SIGNUP';
             navigateTo = '/signup';
             memoryAction = 'SAVED';
-            memorySummary = 'Citizen explicitly confirmed consent to create a new account; auto-navigating to /signup.';
-            reasoningSteps.push(`Step 2 [Account Branch B1]: Explicit consent confirmed -> NAVIGATE_SIGNUP.`);
-            replyText = localizedGoingToSignup(lang);
+            // If user already supplied their name in this consent turn or earlier, preserve & lock it and ask directly for CNIC!
+            if (!memory.auth_draft.full_name && formState.name.trim()) {
+              const checkPrev = validateFullName(formState.name);
+              if (checkPrev.valid && checkPrev.value) {
+                memory.auth_draft.full_name = checkPrev.value;
+              }
+            }
+            if (!memory.auth_draft.full_name && /(?:mera\s+naam|my\s+name\s+is|naam\s+hai|میرا نام)/i.test(transcript)) {
+              const cleaned = cleanColloquialFullName(transcript);
+              if (cleaned) {
+                const checkInline = validateFullName(cleaned);
+                if (checkInline.valid && checkInline.value) {
+                  memory.auth_draft.full_name = checkInline.value;
+                  memory.auth_draft.field_fill_history = memory.auth_draft.field_fill_history ?? [];
+                  pushFillHistory(memory.auth_draft.field_fill_history, 'full_name');
+                }
+              }
+            }
+            const nextSignupSlot = computeMissingAuthSignupFields(memory.auth_draft)[0] ?? 'full_name';
+            memorySummary = `Citizen explicitly confirmed consent to create a new account; auto-navigating to /signup (next slot: ${nextSignupSlot}).`;
+            reasoningSteps.push(`Step 2 [Account Branch B1]: Explicit consent confirmed -> NAVIGATE_SIGNUP (next slot: ${nextSignupSlot}).`);
+            replyText =
+              nextSignupSlot === 'full_name'
+                ? localizedGoingToSignup(lang)
+                : localizedAuthSignupQuestion(lang, nextSignupSlot, memory.auth_draft);
           } else {
             intentDetected = 'citizen_create_clarify';
             uiAction = 'STAY_HOME';
@@ -2828,6 +2891,15 @@ export class VoiceAgentService {
             /\b\d{5}-?\d{7}-?\d\b/.test(toAsciiDigits(transcript)) ||
             /\b(naam|name|mera\s+naam|my\s+name)\b/i.test(transcript) ||
             /(میرا نام|نالو|ناں)/.test(transcript);
+
+          // Strict anti-regression: if signup draft already has any captured field (e.g. full_name), lock mode='signup' so we NEVER re-ask account check!
+          if (
+            memory.auth_draft.mode === 'undecided' &&
+            (memory.auth_draft.full_name.trim() || memory.auth_draft.cnic.trim() || memory.auth_draft.phone.trim())
+          ) {
+            memory.auth_draft.mode = 'signup';
+            memory.active_task = 'auth_signup';
+          }
 
           // Explicit account-creation consent gate when AUTH_GATE mode is still undecided
           if (memory.auth_draft.mode === 'undecided' && !wantsLogin) {
@@ -3010,7 +3082,7 @@ export class VoiceAgentService {
             memory.auth_draft.field_fill_history = authHistory;
 
             const isPureIntentPhrase =
-              /^(naya account|new account|sign ?up|create account|نیا اکاؤنٹ|نیا اکاؤنٹ بنائیں|نیا اکاؤنٹ بنا دو|اکاؤنٹ بنانا ہے)$/i.test(
+              /^(naya account|new account|sign ?up|create account|نیا اکاؤنٹ|نیا اکاؤنٹ بنائیں|نیا اکاؤنٹ بنا دو|اکاؤنٹ بنانا ہے|yes|ok|okay|haan|haan ji|ji|ji haan|bilkul|theek hai|ہاں|جی|جی ہاں|ٹھیک ہے)$/i.test(
                 transcript.trim(),
               );
 
@@ -4559,6 +4631,12 @@ export class VoiceAgentService {
         memory.workflow_stage === 'AUTH_GATE'
           ? (memory.auth_draft.editing_field ?? null)
           : (memory.editing_field ?? null),
+      currently_asked_field:
+        memory.workflow_stage === 'AUTH_GATE' && memory.auth_draft.mode === 'signup'
+          ? (memory.auth_draft.editing_field ?? computeMissingAuthSignupFields(memory.auth_draft)[0] ?? null)
+          : memory.workflow_stage === 'RELIEF_FORM'
+            ? (memory.editing_field ?? computeMissingFields(finalFormState)[0] ?? null)
+            : null,
       validation_errors: graphOut.validation_errors,
       access_control_decision: graphOut.rbac_decision,
       capability_check: graphOut.capability_check,

@@ -19,18 +19,6 @@ import {
   type StructuredUncertaintyCaseNotes,
   type SuspendedTaskEntry,
 } from '@awaaz/shared';
-import {
-  AlertTriangle,
-  Brain,
-  Hand,
-  Mic,
-  RotateCcw,
-  Send,
-  Square,
-  UserCheck,
-  Volume2,
-  VolumeX,
-} from 'lucide-react';
 import { API_BASE_URL } from '@/lib/api/client';
 import { useAuth } from '@/lib/auth/context';
 import { useI18n } from '@/lib/i18n/context';
@@ -92,6 +80,7 @@ export interface VoiceSessionTurnResult {
   auth_draft: AgentAuthDraft;
   field_fill_history?: string[];
   editing_field?: string | null;
+  currently_asked_field?: string | null;
   validation_errors: AgentValidationError[];
   access_control_decision: AgentReasoningAuditLogRecord['access_control_decision'];
   capability_check: 'IN_SCOPE' | 'OUT_OF_SCOPE_ESCALATED';
@@ -294,12 +283,15 @@ interface VoiceAgentContextValue {
   memoryAction: VoiceSessionTurnResult['memory_action'];
   activated: boolean;
   setActivated: (v: boolean) => void;
+  continuousSessionActive: boolean;
+  currentlyAskedField: string | null;
   handsFreeVad: boolean;
   setHandsFreeVad: (v: boolean) => void;
   autoInterrupt: boolean;
   setAutoInterrupt: (v: boolean) => void;
   isVoiceDisabledForStaff: boolean;
   orbState: VoiceAgentState;
+  handleSilenceNoSpeech: () => void;
   audioLevel: number;
   detectedLang: LanguageCode;
   lockedLanguage: LanguageCode;
@@ -361,6 +353,8 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
   const [suspendedTasks, setSuspendedTasks] = useState<SuspendedTaskEntry[]>([]);
   const [memoryAction, setMemoryAction] = useState<VoiceSessionTurnResult['memory_action']>('NONE');
   const [activated, setActivated] = useState(false);
+  const [continuousSessionActive, setContinuousSessionActive] = useState(false);
+  const [currentlyAskedField, setCurrentlyAskedField] = useState<string | null>(null);
   const [handsFreeVad, setHandsFreeVad] = useState(true);
   const [autoInterrupt, setAutoInterrupt] = useState(true);
   const [orbState, setOrbState] = useState<VoiceAgentState>('IDLE_STOPPED');
@@ -396,13 +390,21 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
   const [applicationsStatus, setApplicationsStatus] = useState<CitizenApplicationStatusSummary[]>([]);
   const [officerInquiries, setOfficerInquiries] = useState<OfficerInquiryRecord[]>([]);
 
-  // PHASE 1: Authoritative refs preventing stale closures across all async callbacks
+  // PHASE 1 & 2: Authoritative refs preventing stale closures across all async callbacks & route transitions
   const userStoppedRef = useRef<boolean>(false);
+  const continuousSessionActiveRef = useRef<boolean>(false);
   const voiceDisabledRef = useRef<boolean>(isVoiceDisabledForStaff);
   const activeAbortControllerRef = useRef<AbortController | null>(null);
   const postTtsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ttsWatchdogTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const rearmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeAudioRef = useRef<HTMLAudioElement | null>(null);
   const autoInterruptRef = useRef<boolean>(autoInterrupt);
+
+  const setContinuousActive = useCallback((active: boolean) => {
+    continuousSessionActiveRef.current = active;
+    setContinuousSessionActive(active);
+  }, []);
 
   const sessionIdRef = useRef<string>('');
   const tokenRef = useRef<string | null>(token);
@@ -506,6 +508,14 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
       clearTimeout(postTtsTimerRef.current);
       postTtsTimerRef.current = null;
     }
+    if (ttsWatchdogTimerRef.current) {
+      clearTimeout(ttsWatchdogTimerRef.current);
+      ttsWatchdogTimerRef.current = null;
+    }
+    if (rearmTimerRef.current) {
+      clearTimeout(rearmTimerRef.current);
+      rearmTimerRef.current = null;
+    }
     if (activeAudioRef.current) {
       activeAudioRef.current.onended = null;
       activeAudioRef.current.onerror = null;
@@ -528,6 +538,10 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
   }, [stopBargeInMonitor]);
 
   const hardMuteAndStopMic = useCallback(() => {
+    if (rearmTimerRef.current) {
+      clearTimeout(rearmTimerRef.current);
+      rearmTimerRef.current = null;
+    }
     if (recorderRef.current && recorderRef.current.state !== 'inactive') {
       try {
         recorderRef.current.ondataavailable = null;
@@ -545,11 +559,13 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
   }, [stopVadLoop, stopBargeInMonitor]);
 
   /**
-   * PHASE 1: HARD STOP / COMPLETE STANDBY (`IDLE_STOPPED`).
+   * PHASE 1 & 2: HARD STOP / COMPLETE STANDBY (`IDLE_STOPPED`).
    * Aborts any in-flight fetch cleanly (0 console errors), cancels all TTS, kills mic/VAD/timers,
-   * sets userStoppedRef=true so NO async callback can ever auto-resume, while preserving session & form state.
+   * clears continuousSessionActiveRef and sets userStoppedRef=true so NO async callback can ever auto-resume,
+   * while preserving session_id, locked_language, and filled form/signup state.
    */
   const hardStopVoiceAgent = useCallback(() => {
+    setContinuousActive(false);
     userStoppedRef.current = true;
     handsFreeVadRef.current = false;
     setHandsFreeVad(false);
@@ -566,7 +582,7 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
     cancelAllSpeechOutputs();
     hardMuteAndStopMic();
     updateOrbState('IDLE_STOPPED');
-  }, [cancelAllSpeechOutputs, hardMuteAndStopMic, updateOrbState]);
+  }, [cancelAllSpeechOutputs, hardMuteAndStopMic, setContinuousActive, updateOrbState]);
 
   // PHASE 3: Immediately silence & lock voice agent whenever staff logs in or enters any staff route
   useEffect(() => {
@@ -575,17 +591,42 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
     }
   }, [isVoiceDisabledForStaff, hardStopVoiceAgent]);
 
+  // PHASE 1 & 2: Route-Transition Continuity — NEVER resets workflow_stage, session_id, or form/signup draft!
+  // Keeps active continuous listening seamlessly alive across / -> /signup -> /login -> /citizen.
   useEffect(() => {
     pathnameRef.current = pathname;
     if (isStaffPathname(pathname)) {
       hardStopVoiceAgent();
       return;
     }
-    if (!user && !sessionIdRef.current) {
-      const nextStage: AgentWorkflowStage =
-        pathname === '/login' || pathname === '/signup' ? 'AUTH_GATE' : 'HOME_WELCOME';
-      workflowStageRef.current = nextStage;
-      setWorkflowStage(nextStage);
+    if (!user && !sessionIdRef.current && workflowStageRef.current === 'HOME_WELCOME') {
+      if (pathname === '/login' || pathname === '/signup') {
+        workflowStageRef.current = 'AUTH_GATE';
+        setWorkflowStage('AUTH_GATE');
+      }
+    }
+    // If continuous voice session is active and browser paused recognition during navigation, auto-rearm LISTENING within 150ms
+    if (
+      continuousSessionActiveRef.current &&
+      !userStoppedRef.current &&
+      !voiceDisabledRef.current &&
+      !inFlightRef.current &&
+      !agentSpeakingRef.current &&
+      orbStateRef.current === 'IDLE_STOPPED'
+    ) {
+      if (rearmTimerRef.current) clearTimeout(rearmTimerRef.current);
+      rearmTimerRef.current = setTimeout(() => {
+        rearmTimerRef.current = null;
+        if (
+          continuousSessionActiveRef.current &&
+          !userStoppedRef.current &&
+          !voiceDisabledRef.current &&
+          !inFlightRef.current &&
+          !agentSpeakingRef.current
+        ) {
+          void startListeningRef.current();
+        }
+      }, 150);
     }
   }, [pathname, user, hardStopVoiceAgent]);
 
@@ -693,7 +734,14 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
       // Kick off echo-safe barge-in monitor in parallel with TTS playback
       void startBargeInMonitor();
 
+      let settled = false;
       const finishWithCooldown = () => {
+        if (settled) return;
+        settled = true;
+        if (ttsWatchdogTimerRef.current) {
+          clearTimeout(ttsWatchdogTimerRef.current);
+          ttsWatchdogTimerRef.current = null;
+        }
         stopBargeInMonitor();
         if (userStoppedRef.current || voiceDisabledRef.current) {
           agentSpeakingRef.current = false;
@@ -709,8 +757,18 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
             return;
           }
           onEnded();
-        }, 380);
+        }, 280);
       };
+
+      // Safety watchdog timer: guarantees post-TTS re-arm even if browser speechSynthesis.onend silently hangs!
+      const watchdogMs = Math.max(5500, Math.min(26000, text.length * 145 + 4000));
+      if (ttsWatchdogTimerRef.current) clearTimeout(ttsWatchdogTimerRef.current);
+      ttsWatchdogTimerRef.current = setTimeout(() => {
+        ttsWatchdogTimerRef.current = null;
+        if (!settled && agentSpeakingRef.current) {
+          finishWithCooldown();
+        }
+      }, watchdogMs);
 
       if (base64Audio) {
         try {
@@ -728,6 +786,11 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
           return true;
         } catch (err) {
           if (err instanceof Error && err.name === 'NotAllowedError') {
+            settled = true;
+            if (ttsWatchdogTimerRef.current) {
+              clearTimeout(ttsWatchdogTimerRef.current);
+              ttsWatchdogTimerRef.current = null;
+            }
             setAutoplayBlocked(true);
             agentSpeakingRef.current = false;
             stopBargeInMonitor();
@@ -820,6 +883,7 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
 
       const onDoneSpeaking = () => {
         if (lockStoppedAfterSpeech) {
+          setContinuousActive(false);
           userStoppedRef.current = true;
           handsFreeVadRef.current = false;
           setHandsFreeVad(false);
@@ -830,18 +894,14 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
           updateOrbState('IDLE_STOPPED');
           return;
         }
-        if (!inFlightRef.current) {
-          updateOrbState('IDLE_STOPPED');
-        }
-        if (
-          shouldAutoReopen &&
-          handsFreeVadRef.current &&
-          !userStoppedRef.current &&
-          !voiceDisabledRef.current &&
-          !inFlightRef.current &&
-          !agentSpeakingRef.current
-        ) {
+        const keepListening =
+          shouldAutoReopen ||
+          (continuousSessionActiveRef.current && !userStoppedRef.current && !voiceDisabledRef.current);
+
+        if (keepListening && !inFlightRef.current && !agentSpeakingRef.current) {
           void startListeningRef.current();
+        } else if (!inFlightRef.current) {
+          updateOrbState('IDLE_STOPPED');
         }
       };
 
@@ -853,7 +913,7 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
         onDoneSpeaking,
       );
     },
-    [playServerOrBrowserSpeech, updateOrbState],
+    [playServerOrBrowserSpeech, setContinuousActive, updateOrbState],
   );
 
   const sendSessionTurn = useCallback(
@@ -993,6 +1053,24 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
         if (data.auth_draft) setAuthDraft(data.auth_draft);
         setFieldFillHistory(data.field_fill_history ?? []);
         setEditingField(data.editing_field ?? null);
+        if (data.currently_asked_field !== undefined) {
+          setCurrentlyAskedField(data.currently_asked_field ?? null);
+        } else if (data.workflow_stage === 'AUTH_GATE' && data.auth_draft?.mode === 'signup') {
+          const nextSignup = !data.auth_draft.full_name?.trim()
+            ? 'full_name'
+            : !data.auth_draft.cnic?.trim()
+              ? 'cnic'
+              : !data.auth_draft.phone?.trim()
+                ? 'phone'
+                : !data.auth_draft.pin?.trim()
+                  ? 'pin'
+                  : null;
+          setCurrentlyAskedField(data.editing_field ?? nextSignup);
+        } else if (data.workflow_stage === 'RELIEF_FORM' && data.form_state) {
+          setCurrentlyAskedField(data.editing_field ?? data.form_state.missing_fields?.[0] ?? null);
+        } else {
+          setCurrentlyAskedField(null);
+        }
         setValidationErrors(data.validation_errors ?? []);
         if (data.reasoning_steps) setReasoningSteps(data.reasoning_steps);
         if (data.self_reflection_check) setSelfReflection(data.self_reflection_check);
@@ -1049,23 +1127,46 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
 
         inFlightRef.current = false;
 
-        // Spoken pause command or declined account consent -> speak brief confirmation, then lock IDLE_STOPPED
-        if (data.ui_action === 'PAUSE_VOICE_AGENT') {
+        // Spoken pause command, declined account consent, OR final submitted claim receipt -> speak confirmation, then cleanly stop!
+        const isFinalReceipt =
+          data.ui_action === 'SHOW_RECEIPT' ||
+          Boolean(data.session_ended);
+
+        if (data.ui_action === 'PAUSE_VOICE_AGENT' || isFinalReceipt) {
           await speakAndMaybeReopenMic(data, false, true);
           return;
         }
 
         if (isSilentLangSync) {
-          updateOrbState('IDLE_STOPPED');
+          if (continuousSessionActiveRef.current && !userStoppedRef.current) {
+            void startListeningRef.current();
+          } else {
+            updateOrbState('IDLE_STOPPED');
+          }
           return;
         }
 
-        await speakAndMaybeReopenMic(data, Boolean(payload.autoReopenMic), false);
+        await speakAndMaybeReopenMic(
+          data,
+          Boolean(payload.autoReopenMic) || continuousSessionActiveRef.current,
+          false,
+        );
       } catch (err) {
         inFlightRef.current = false;
         // Swallow AbortError cleanly with ZERO console errors (Phase 1 requirement)
         if (err instanceof Error && err.name === 'AbortError') {
           updateOrbState('IDLE_STOPPED');
+          return;
+        }
+        // Auto-recover into LISTENING if continuous session is still active!
+        if (continuousSessionActiveRef.current && !userStoppedRef.current && !voiceDisabledRef.current) {
+          if (rearmTimerRef.current) clearTimeout(rearmTimerRef.current);
+          rearmTimerRef.current = setTimeout(() => {
+            rearmTimerRef.current = null;
+            if (continuousSessionActiveRef.current && !userStoppedRef.current && !voiceDisabledRef.current) {
+              void startListeningRef.current();
+            }
+          }, 250);
           return;
         }
         updateOrbState('IDLE_STOPPED');
@@ -1098,6 +1199,7 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
 
     if (!sessionIdRef.current) {
       setAgentReply(getInitialHomeGreeting(language, user?.display_name));
+      return;
     }
 
     if (voiceDisabledRef.current || userStoppedRef.current) {
@@ -1128,6 +1230,7 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
       setMemoryAction('NONE');
       setFieldFillHistory([]);
       setEditingField(null);
+      setCurrentlyAskedField(null);
       const nextStage: AgentWorkflowStage =
         targetStage ?? (user && !isStaffRole(user.active_role) ? 'AGENT_HUB' : 'HOME_WELCOME');
       workflowStageRef.current = nextStage;
@@ -1158,6 +1261,7 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
       handleResetSession('HOME_WELCOME');
     } else if (
       user &&
+      prevId !== currId &&
       (workflowStageRef.current === 'HOME_WELCOME' ||
         workflowStageRef.current === 'LANGUAGE_SELECT' ||
         workflowStageRef.current === 'ROLE_IDENTIFICATION' ||
@@ -1166,6 +1270,7 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
     ) {
       workflowStageRef.current = 'AGENT_HUB';
       setWorkflowStage('AGENT_HUB');
+      setCurrentlyAskedField(null);
       setAgentReply(getInitialHomeGreeting(detectedLangRef.current, user.display_name));
     }
   }, [user, handleResetSession, hardStopVoiceAgent]);
@@ -1219,7 +1324,26 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
         }
         const blob = new Blob(chunksRef.current, { type: mimeType });
         if (speechFrames >= 4 && blob.size > 1200 && !agentSpeakingRef.current && !inFlightRef.current) {
-          await sendSessionTurn({ audioBlob: blob, autoReopenMic: handsFreeVadRef.current });
+          await sendSessionTurn({
+            audioBlob: blob,
+            autoReopenMic: continuousSessionActiveRef.current || handsFreeVadRef.current,
+          });
+        } else if (continuousSessionActiveRef.current && !userStoppedRef.current && !voiceDisabledRef.current) {
+          // PHASE 2: Silent no-speech / thinking pause -> NEVER drop to IDLE_STOPPED; silently re-arm LISTENING after 200ms!
+          updateOrbState('LISTENING');
+          if (rearmTimerRef.current) clearTimeout(rearmTimerRef.current);
+          rearmTimerRef.current = setTimeout(() => {
+            rearmTimerRef.current = null;
+            if (
+              continuousSessionActiveRef.current &&
+              !userStoppedRef.current &&
+              !voiceDisabledRef.current &&
+              !inFlightRef.current &&
+              !agentSpeakingRef.current
+            ) {
+              void startListeningRef.current();
+            }
+          }, 200);
         } else {
           updateOrbState('IDLE_STOPPED');
         }
@@ -1283,11 +1407,48 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
   }, [cancelAllSpeechOutputs, hardMuteAndStopMic, sendSessionTurn, stopVadLoop, updateOrbState]);
 
   /**
+   * PHASE 2: Handle browser no-speech / silence timeout without dropping the continuous session!
+   */
+  const handleSilenceNoSpeech = useCallback(() => {
+    if (!continuousSessionActiveRef.current || userStoppedRef.current || voiceDisabledRef.current) {
+      return;
+    }
+    if (inFlightRef.current || agentSpeakingRef.current) return;
+    hardMuteAndStopMic();
+    updateOrbState('LISTENING');
+    if (rearmTimerRef.current) clearTimeout(rearmTimerRef.current);
+    rearmTimerRef.current = setTimeout(() => {
+      rearmTimerRef.current = null;
+      if (
+        continuousSessionActiveRef.current &&
+        !userStoppedRef.current &&
+        !voiceDisabledRef.current &&
+        !inFlightRef.current &&
+        !agentSpeakingRef.current
+      ) {
+        void startListeningRef.current();
+      }
+    }, 200);
+  }, [hardMuteAndStopMic, updateOrbState]);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      (window as unknown as { __awaazSimulateNoSpeech?: () => void }).__awaazSimulateNoSpeech = handleSilenceNoSpeech;
+    }
+    return () => {
+      if (typeof window !== 'undefined') {
+        delete (window as unknown as { __awaazSimulateNoSpeech?: () => void }).__awaazSimulateNoSpeech;
+      }
+    };
+  }, [handleSilenceNoSpeech]);
+
+  /**
    * PHASE 1: Instant Tap-to-Interrupt / Voice Barge-In (`SPEAKING` -> `LISTENING` in <100ms).
-   * Zero cooldown delay: immediately kills TTS + audio + timers and opens LISTENING.
+   * Zero cooldown delay: immediately kills TTS + audio + timers and opens LISTENING with continuous session active.
    */
   const interruptAndListen = useCallback(async () => {
     if (voiceDisabledRef.current) return;
+    setContinuousActive(true);
     userStoppedRef.current = false;
     setAutoplayBlocked(false);
     setActivated(true);
@@ -1295,7 +1456,7 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
     // Synchronous state transition guarantees <100ms transition to LISTENING
     updateOrbState('LISTENING');
     await startListeningWithVad();
-  }, [cancelAllSpeechOutputs, startListeningWithVad, updateOrbState]);
+  }, [cancelAllSpeechOutputs, setContinuousActive, startListeningWithVad, updateOrbState]);
 
   useEffect(() => {
     startListeningRef.current = startListeningWithVad;
@@ -1315,7 +1476,7 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
       return;
     }
 
-    // If currently LISTENING, stop mic cleanly
+    // If currently LISTENING and user taps orb manually, finalize current utterance or stop listening cleanly
     if (orbStateRef.current === 'LISTENING') {
       if (recorderRef.current && recorderRef.current.state !== 'inactive') {
         try {
@@ -1324,21 +1485,24 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
           updateOrbState('IDLE_STOPPED');
         }
       } else {
-        updateOrbState('IDLE_STOPPED');
+        hardStopVoiceAgent();
       }
       return;
     }
 
-    // Manual resume from IDLE_STOPPED (preserves session_id, locked_language, and filled fields!)
+    // Start/Resume continuous voice session (preserves session_id, locked_language, and filled fields!)
+    setContinuousActive(true);
     userStoppedRef.current = false;
+    handsFreeVadRef.current = true;
+    setHandsFreeVad(true);
     setAutoplayBlocked(false);
     if (!activated) {
       setActivated(true);
-      await sendSessionTurn({ langHint: detectedLangRef.current, autoReopenMic: handsFreeVadRef.current });
+      await sendSessionTurn({ langHint: detectedLangRef.current, autoReopenMic: true });
     } else {
       await startListeningWithVad();
     }
-  }, [activated, interruptAndListen, sendSessionTurn, startListeningWithVad, updateOrbState]);
+  }, [activated, hardStopVoiceAgent, interruptAndListen, sendSessionTurn, setContinuousActive, startListeningWithVad, updateOrbState]);
 
   const handleImageUpload = useCallback(
     async (file: File | null, docType: string) => {
@@ -1376,11 +1540,14 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
 
   const triggerWelcomeSpeech = useCallback(async () => {
     if (voiceDisabledRef.current) return;
+    setContinuousActive(true);
     userStoppedRef.current = false;
+    handsFreeVadRef.current = true;
+    setHandsFreeVad(true);
     setAutoplayBlocked(false);
     setActivated(true);
-    await sendSessionTurn({ langHint: detectedLangRef.current, autoReopenMic: handsFreeVadRef.current });
-  }, [sendSessionTurn]);
+    await sendSessionTurn({ langHint: detectedLangRef.current, autoReopenMic: true });
+  }, [sendSessionTurn, setContinuousActive]);
 
   const registerOnCaseSubmitted = useCallback((cb: (() => void) | null) => {
     onCaseSubmittedRef.current = cb;
@@ -1395,12 +1562,15 @@ export function VoiceAgentProvider({ children }: { children: React.ReactNode }) 
         memoryAction,
         activated,
         setActivated,
+        continuousSessionActive,
+        currentlyAskedField,
         handsFreeVad,
         setHandsFreeVad,
         autoInterrupt,
         setAutoInterrupt,
         isVoiceDisabledForStaff,
         orbState,
+        handleSilenceNoSpeech,
         audioLevel,
         detectedLang,
         lockedLanguage: detectedLang,
@@ -1452,211 +1622,10 @@ export function useVoiceAgent(): VoiceAgentContextValue {
 }
 
 /**
- * PHASE 3 & 4: Compact Voice Saathi Dock — ONLY rendered on /login & /signup (and /helper) for non-staff users.
- * Completely hidden on `/` and `/citizen` (where the single unified VoiceSaathiOverlay lives)
- * and 100% hidden & silent for officer, admin, and auditor accounts/routes!
+ * PHASE 1: Single Persistent Voice UI architecture.
+ * The unified VoiceSaathiOverlay is now hosted persistently inside AppShell across all citizen routes
+ * (/, /signup, /login, /citizen, /helper), so no secondary dock is ever mounted (zero UI switch, zero remount).
  */
 export function GlobalVoiceSaathiDock() {
-  const pathname = usePathname();
-  const { user } = useAuth();
-  const { dict } = useI18n();
-  const va = dict.voiceAgent;
-  const {
-    workflowStage,
-    isVoiceDisabledForStaff,
-    orbState,
-    detectedLang,
-    lastTranscript,
-    manualText,
-    setManualText,
-    agentReply,
-    validationErrors,
-    setActivated,
-    sendSessionTurn,
-    handleActivateTouch,
-    interruptAndListen,
-    hardStopVoiceAgent,
-    handleResetSession,
-    replayCurrentReply,
-  } = useVoiceAgent();
-
-  // PHASE 3: Absolute silence & hidden overlay for staff roles/routes, and ZERO duplicate dock on `/` or `/citizen`
-  if (isVoiceDisabledForStaff || pathname === '/' || pathname === '/citizen') {
-    return null;
-  }
-
-  const isActive = orbState === 'LISTENING' || orbState === 'THINKING' || orbState === 'SPEAKING';
-
-  return (
-    <section
-      data-testid="global-voice-saathi-dock"
-      data-workflow-stage={workflowStage}
-      data-voice-state={orbState}
-      className="max-w-7xl w-full mx-auto px-4 pt-4"
-    >
-      <div className="rounded-2xl bg-gradient-to-br from-slate-900 via-teal-950 to-slate-900 text-white p-4 shadow-lg border border-teal-700/50 space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2 flex-wrap min-w-0">
-            <span className="inline-flex h-8 w-8 items-center justify-center rounded-xl bg-teal-500/20 border border-teal-400/40 shrink-0">
-              <Brain className="h-4 w-4 text-teal-300" />
-            </span>
-            <h2 className="text-base font-bold">{va.title}</h2>
-            <span
-              data-testid="detected-language-badge"
-              className="px-2.5 py-0.5 rounded-full bg-teal-400/20 border border-teal-300/40 text-teal-200 text-xs font-bold"
-            >
-              {LANGUAGE_REGISTRY[detectedLang]?.native_name} ({detectedLang.toUpperCase()})
-            </span>
-            {user && (
-              <span
-                data-testid="authenticated-citizen-badge"
-                className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-500/25 border border-emerald-300/40 text-emerald-200 text-xs font-bold"
-              >
-                <UserCheck className="h-3.5 w-3.5" />
-                <span>{user.display_name}</span>
-              </span>
-            )}
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            {orbState === 'SPEAKING' && (
-              <button
-                type="button"
-                data-testid="voice-interrupt-btn"
-                onClick={() => void interruptAndListen()}
-                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-bold"
-              >
-                <Hand className="h-3.5 w-3.5" />
-                <span>{detectedLang === 'en' ? 'Interrupt & Answer' : 'روک کر جواب دیں'}</span>
-              </button>
-            )}
-            {isActive && (
-              <button
-                type="button"
-                data-testid="voice-stop-btn"
-                onClick={() => hardStopVoiceAgent()}
-                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold"
-              >
-                <VolumeX className="h-3.5 w-3.5" />
-                <span>{detectedLang === 'en' ? 'Stop' : 'روکیں'}</span>
-              </button>
-            )}
-            <button
-              type="button"
-              onClick={() => handleResetSession()}
-              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-600 text-xs font-semibold"
-            >
-              <RotateCcw className="h-3.5 w-3.5" />
-              <span>{va.resetBtn}</span>
-            </button>
-          </div>
-        </div>
-
-        <div className="flex flex-col md:flex-row items-stretch md:items-center gap-4">
-          <button
-            type="button"
-            data-testid="voice-orb-btn"
-            onClick={() => void handleActivateTouch()}
-            className={`shrink-0 h-20 w-20 self-center rounded-full flex flex-col items-center justify-center border-2 shadow-lg transition-transform duration-200 ${
-              orbState === 'LISTENING'
-                ? 'bg-rose-600 border-rose-300 scale-105'
-                : orbState === 'THINKING'
-                  ? 'bg-amber-600 border-amber-200 animate-pulse'
-                  : orbState === 'SPEAKING'
-                    ? 'bg-emerald-600 border-emerald-300 hover:scale-105'
-                    : 'bg-teal-600 border-teal-300 hover:bg-teal-500 hover:scale-105'
-            }`}
-            aria-label={va.tapToSpeak}
-          >
-            {orbState === 'LISTENING' ? (
-              <Square className="h-6 w-6 text-white" />
-            ) : orbState === 'SPEAKING' ? (
-              <Volume2 className="h-6 w-6 text-white" />
-            ) : (
-              <Mic className="h-6 w-6 text-white" />
-            )}
-            <span className="text-[10px] font-bold uppercase mt-0.5">
-              {orbState === 'LISTENING'
-                ? va.listening
-                : orbState === 'THINKING'
-                  ? va.reasoning
-                  : orbState === 'SPEAKING'
-                    ? va.speaking
-                    : va.tapToSpeak}
-            </span>
-          </button>
-
-          <div className="flex-1 min-w-0 space-y-2">
-            {lastTranscript && (
-              <div
-                data-testid="voice-last-transcript"
-                className="px-3 py-1.5 rounded-lg bg-slate-900/90 border border-slate-700 text-xs text-amber-200 break-words"
-              >
-                <strong>{va.youSaid}</strong> {lastTranscript}
-              </div>
-            )}
-            <div className="px-3.5 py-2.5 rounded-xl bg-teal-900/60 border border-teal-600/50 text-sm text-teal-50 flex items-start justify-between gap-3">
-              <p data-testid="voice-agent-reply" className="break-words flex-1 leading-relaxed">
-                {agentReply}
-              </p>
-              <button
-                type="button"
-                onClick={() => void replayCurrentReply()}
-                className="shrink-0 inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-teal-800 hover:bg-teal-700 text-xs font-semibold border border-teal-500/40"
-              >
-                <Volume2 className="h-3.5 w-3.5" />
-                <span>{va.replayVoice}</span>
-              </button>
-            </div>
-
-            {validationErrors.length > 0 && (
-              <div
-                data-testid="validation-errors-box"
-                className="p-2.5 rounded-xl bg-rose-950/90 border border-rose-400 text-rose-100 text-xs space-y-1"
-              >
-                <div className="font-bold flex items-center gap-1.5">
-                  <AlertTriangle className="h-4 w-4 shrink-0" />
-                  <span>{va.validationRejectedTitle}</span>
-                </div>
-                {validationErrors.map((err, i) => (
-                  <div key={i}>
-                    • <strong>{err.field}:</strong> {err.message}
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (!manualText.trim() || orbState === 'THINKING') return;
-                const toSend = manualText.trim();
-                setManualText('');
-                setActivated(true);
-                void sendSessionTurn({ transcript: toSend, autoReopenMic: false });
-              }}
-              className="w-full min-w-0 flex gap-2"
-            >
-              <input
-                data-testid="voice-manual-input"
-                type="text"
-                value={manualText}
-                onChange={(e) => setManualText(e.target.value)}
-                placeholder={va.inputPlaceholder}
-                className="flex-1 min-w-0 rounded-xl bg-slate-900/90 border border-teal-700 px-3.5 py-2 text-sm text-white placeholder:text-slate-400 focus:outline-none focus:border-teal-400"
-              />
-              <button
-                data-testid="voice-manual-submit"
-                type="submit"
-                disabled={!manualText.trim() || orbState === 'THINKING'}
-                className="shrink-0 px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 disabled:opacity-40 font-bold text-xs inline-flex items-center gap-1"
-              >
-                <Send className="h-4 w-4" />
-              </button>
-            </form>
-          </div>
-        </div>
-      </div>
-    </section>
-  );
+  return null;
 }

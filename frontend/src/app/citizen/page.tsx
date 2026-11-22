@@ -34,8 +34,7 @@ import {
   CitizenOnboardingFlow,
   type OnboardingCompletePayload,
 } from '@/components/citizen/CitizenOnboardingFlow';
-import { VoiceSaathiOverlay } from '@/components/citizen/VoiceSaathiOverlay';
-import { KeypadPhoneSimulatorModal } from '@/components/telephony/KeypadPhoneSimulatorModal';
+import { useVoiceAgent } from '@/components/voice/GlobalVoiceSaathiProvider';
 import { VoiceControls } from '@/components/voice/VoiceControls';
 import { API_BASE_URL, ApiClientError, apiRequest } from '@/lib/api/client';
 import { useAuth } from '@/lib/auth/context';
@@ -111,7 +110,7 @@ export default function CitizenPortalPage() {
   const [explicitSubmitConfirmed, setExplicitSubmitConfirmed] = useState(false);
   const [submittedReference, setSubmittedReference] = useState<string | null>(null);
   const [speechNotice, setSpeechNotice] = useState<string | null>(null);
-  const [keypadOpen, setKeypadOpen] = useState(false);
+  const { registerOnCaseSubmitted } = useVoiceAgent();
 
   const activeField = WIZARD_FIELDS[stepIdx] ?? 'full_name';
   const fieldSpec = APPLICATION_FIELD_SPECS[activeField];
@@ -217,6 +216,14 @@ export default function CitizenPortalPage() {
     setInputValue(existing ? String(existing.field_value) : '');
     setConfirmed(Boolean(existing?.confirmed_by_citizen));
   }, [activeField, currentDraft?.localDraftId, currentDraft?.answers]);
+
+  useEffect(() => {
+    registerOnCaseSubmitted(() => {
+      void refreshAll();
+      setStage(4);
+    });
+    return () => registerOnCaseSubmitted(null);
+  }, [registerOnCaseSubmitted, refreshAll]);
 
   if (user && user.active_role !== 'citizen') {
     return (
@@ -726,19 +733,7 @@ export default function CitizenPortalPage() {
   const completedFields = WIZARD_FIELDS.filter((f) => Boolean(currentDraft?.answers[f]?.field_value)).length;
 
   return (
-    <div className="max-w-4xl mx-auto space-y-6">
-      {/* Unified Autonomous Multilingual Voice Saathi */}
-      <VoiceSaathiOverlay
-        onOpenKeypadPhone={user?.active_role === 'citizen' ? () => setKeypadOpen(true) : undefined}
-        onCaseSubmitted={() => {
-          void refreshAll();
-          setStage(4);
-        }}
-      />
-      {user?.active_role === 'citizen' && (
-        <KeypadPhoneSimulatorModal open={keypadOpen} onClose={() => setKeypadOpen(false)} />
-      )}
-
+    <div className="max-w-7xl mx-auto space-y-6">
       {!user ? (
         <CitizenOnboardingFlow
           onComplete={(payload) => {
@@ -750,12 +745,12 @@ export default function CitizenPortalPage() {
         />
       ) : (
         <>
-          {/* Warm, Simple Header */}
-      <div className="rounded-2xl bg-teal-800 text-white p-6 space-y-2 shadow-xs">
+          {/* Warm, Simple Civic Blue Header */}
+      <div className="rounded-2xl bg-gradient-to-r from-[#0F2D5C] via-[#1D4ED8] to-[#2563EB] text-white p-6 space-y-2 shadow-md">
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div>
-            <h1 className="text-2xl sm:text-3xl font-bold">{dict.easyCitizen.welcomeTitle}</h1>
-            <p className="text-teal-50 text-sm sm:text-base mt-1">{dict.easyCitizen.welcomeSubtitle}</p>
+            <h1 className="text-2xl sm:text-3xl font-extrabold">{dict.easyCitizen.welcomeTitle}</h1>
+            <p className="text-sky-100 text-sm sm:text-base font-semibold mt-1">{dict.easyCitizen.welcomeSubtitle}</p>
           </div>
           {cases.length > 0 && (
             <button

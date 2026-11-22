@@ -9,6 +9,7 @@ import type {
 import type { AuditService } from '../../../core/audit/audit-service';
 import type { AuthContext } from '../../../core/auth/auth-service';
 import type { DataStore } from '../../../core/database/types';
+import type { AIProvider } from '../../../integrations/ai/provider';
 
 export type DocumentSamplePreset = 'valid_cnic' | 'blurry_rural_photo' | 'tampered_edited_doc';
 
@@ -51,11 +52,12 @@ export class DocumentForgeryService {
   constructor(
     private readonly store: DataStore,
     private readonly audit: AuditService,
+    private readonly aiProvider?: AIProvider,
   ) {}
 
-  private decodePayloadToInspectionText(base64Raw?: string): { rawText: string; byteLength: number } {
+  private decodePayloadToInspectionText(base64Raw?: string): { rawText: string; byteLength: number; buffer: Buffer | null } {
     if (!base64Raw || typeof base64Raw !== 'string') {
-      return { rawText: '', byteLength: 0 };
+      return { rawText: '', byteLength: 0, buffer: null };
     }
     const stripped = base64Raw.replace(/^data:[^;]+;base64,/, '').trim();
     try {
@@ -63,9 +65,10 @@ export class DocumentForgeryService {
       return {
         rawText: buf.toString('latin1'),
         byteLength: buf.length,
+        buffer: buf,
       };
     } catch {
-      return { rawText: base64Raw, byteLength: base64Raw.length };
+      return { rawText: base64Raw, byteLength: base64Raw.length, buffer: null };
     }
   }
 
@@ -83,6 +86,7 @@ export class DocumentForgeryService {
     let fileName = input.file_name?.trim() || 'uploaded_document.png';
     let inspectionText = '';
     let byteLength = 0;
+    let uploadedBuffer: Buffer | null = null;
 
     if (input.sample_preset === 'valid_cnic') {
       fileName = 'sample_valid_cnic_clean.png';
@@ -100,12 +104,54 @@ export class DocumentForgeryService {
       const decoded = this.decodePayloadToInspectionText(input.image_base64);
       inspectionText = decoded.rawText;
       byteLength = decoded.byteLength;
+      uploadedBuffer = decoded.buffer;
     }
 
     const tamperIndicators: string[] = [];
     const qualityIssues: string[] = [];
     const crossFieldMismatches: string[] = [];
     const extractedFields: Record<string, string> = {};
+
+    // 0. Real Multimodal Vision OCR for real uploaded CNIC / Bill images (so real photos extract Name & CNIC accurately!)
+    if (!input.sample_preset && uploadedBuffer && uploadedBuffer.length > 0 && this.aiProvider?.isConfigured()) {
+      const effectiveMime = input.mime_type?.trim() || (fileName.toLowerCase().endsWith('.txt') ? 'text/plain' : 'image/png');
+      const isRealBinaryImage = effectiveMime.startsWith('image/') && uploadedBuffer.length >= 200;
+      if (isRealBinaryImage) {
+        try {
+          const ocr = await this.aiProvider.extractDocumentFields({
+            fileBuffer: uploadedBuffer,
+            mimeType: effectiveMime,
+            expectedDocumentType: 'mock_identity_document',
+          });
+          if (typeof ocr.extracted_fields.full_name === 'string' && ocr.extracted_fields.full_name.trim()) {
+            extractedFields.full_name = ocr.extracted_fields.full_name.trim();
+          }
+          const ocrCnic =
+            (typeof ocr.extracted_fields.mock_identity_reference === 'string' && ocr.extracted_fields.mock_identity_reference.trim()) ||
+            (typeof ocr.extracted_fields.cnic === 'string' && ocr.extracted_fields.cnic.trim()) ||
+            '';
+          if (ocrCnic) {
+            const digits = ocrCnic.replace(/\D/g, '');
+            extractedFields.cnic =
+              digits.length === 13 ? `${digits.slice(0, 5)}-${digits.slice(5, 12)}-${digits.slice(12)}` : ocrCnic;
+          }
+          if (typeof ocr.extracted_fields.district === 'string' && ocr.extracted_fields.district.trim()) {
+            extractedFields.district = ocr.extracted_fields.district.trim();
+          }
+          if (
+            (typeof ocr.extracted_fields.monthly_income === 'number' || typeof ocr.extracted_fields.monthly_income === 'string') &&
+            String(ocr.extracted_fields.monthly_income).trim()
+          ) {
+            extractedFields.monthly_income = String(ocr.extracted_fields.monthly_income).trim();
+          }
+          if (ocr.readability_score < 0.45 && tamperIndicators.length === 0) {
+            qualityIssues.push('Vision OCR readability score was low — image may be blurry or dimly lit.');
+          }
+        } catch {
+          // Graceful fallback to deterministic metadata/text extraction if Vision API is unreachable
+        }
+      }
+    }
 
     // 1. Metadata / Editing Software Signature Check
     for (const sig of EDITING_SOFTWARE_SIGNATURES) {
@@ -117,24 +163,35 @@ export class DocumentForgeryService {
       }
     }
 
-    // 2. Extract CNIC & Name hints from text/metadata for Cross-Field Consistency Check
-    const cnicMatch = inspectionText.match(/\b(\d{5}-\d{7}-\d)\b/);
-    if (cnicMatch?.[1]) {
-      extractedFields.cnic = cnicMatch[1];
+    // 2. Extract CNIC & Name hints from text/metadata/filename for Cross-Field Consistency Check
+    const combinedText = `${inspectionText}\n${fileName}`;
+    const cnicDashedMatch = combinedText.match(/\b(\d{5}-\d{7}-\d)\b/);
+    const cnicDigitsMatch = !cnicDashedMatch ? combinedText.match(/\b(\d{13})\b/) : null;
+    const regexCnic =
+      cnicDashedMatch?.[1] ??
+      (cnicDigitsMatch?.[1]
+        ? `${cnicDigitsMatch[1].slice(0, 5)}-${cnicDigitsMatch[1].slice(5, 12)}-${cnicDigitsMatch[1].slice(12)}`
+        : null);
+    if (!extractedFields.cnic && regexCnic) {
+      extractedFields.cnic = regexCnic;
+    }
+    if (extractedFields.cnic) {
       if (
         citizen?.mock_identity_reference &&
         /\d{5}-\d{7}-\d/.test(citizen.mock_identity_reference) &&
-        citizen.mock_identity_reference !== cnicMatch[1]
+        citizen.mock_identity_reference !== extractedFields.cnic
       ) {
         crossFieldMismatches.push(
-          `Document CNIC (${cnicMatch[1]}) does not match registered citizen CNIC (${citizen.mock_identity_reference}).`,
+          `Document CNIC (${extractedFields.cnic}) does not match registered citizen CNIC (${citizen.mock_identity_reference}).`,
         );
         tamperIndicators.push('CNIC cross-field mismatch against registered citizen profile');
       }
     }
-    const nameMatch = inspectionText.match(/NAME:\s*([^|\n]+)/i);
-    if (nameMatch?.[1]) {
+    const nameMatch = inspectionText.match(/(?:FULL\s*NAME|NAME)\s*[:\-]\s*([^|\r\n]+)/i);
+    if (!extractedFields.full_name && nameMatch?.[1]) {
       extractedFields.full_name = nameMatch[1].trim();
+    }
+    if (extractedFields.full_name) {
       if (
         citizen?.display_name &&
         !extractedFields.full_name.toLowerCase().includes(citizen.display_name.split(' ')[0]!.toLowerCase())

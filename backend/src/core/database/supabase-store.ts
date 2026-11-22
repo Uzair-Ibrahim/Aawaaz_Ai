@@ -1169,4 +1169,73 @@ export class SupabaseDataStore implements DataStore {
       .update({ hit_count: nextCount, updated_at: new Date().toISOString() })
       .eq('id', docId);
   }
+
+  // --- Phase 3 Rubric Persistence Tables (Rules v1.x, Granular Consent, Doc Authenticity, RAG Collections) ---
+  async listDynamicRuleVersions(organizationId: string): Promise<Array<Record<string, unknown>>> {
+    const res = await this.client
+      .from('eligibility_rule_versions')
+      .select('*')
+      .eq('organization_id', organizationId)
+      .order('created_at', { ascending: false });
+    return unwrap(res, 'listDynamicRuleVersions') as Array<Record<string, unknown>>;
+  }
+
+  async createDynamicRuleVersion(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const res = await this.client
+      .from('eligibility_rule_versions')
+      .insert(input)
+      .select('*')
+      .single();
+    return unwrap(res, 'createDynamicRuleVersion') as Record<string, unknown>;
+  }
+
+  async getCitizenGranularConsent(
+    organizationId: string,
+    userId: string,
+  ): Promise<Record<string, unknown> | null> {
+    const res = await this.client
+      .from('citizen_consent_records')
+      .select('*')
+      .eq('organization_id', organizationId)
+      .eq('user_id', userId)
+      .maybeSingle();
+    if (res.error) throw new AppError(502, 'DATABASE_ERROR', res.error.message);
+    return (res.data as Record<string, unknown> | null) ?? null;
+  }
+
+  async upsertCitizenGranularConsent(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const res = await this.client
+      .from('citizen_consent_records')
+      .upsert(input, { onConflict: 'organization_id,user_id' })
+      .select('*')
+      .single();
+    return unwrap(res, 'upsertCitizenGranularConsent') as Record<string, unknown>;
+  }
+
+  async createDocumentAuthenticityCheck(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const res = await this.client
+      .from('document_authenticity_checks')
+      .insert(input)
+      .select('*')
+      .single();
+    return unwrap(res, 'createDocumentAuthenticityCheck') as Record<string, unknown>;
+  }
+
+  async listDocumentAuthenticityChecks(organizationId: string): Promise<Array<Record<string, unknown>>> {
+    const res = await this.client
+      .from('document_authenticity_checks')
+      .select('*')
+      .eq('organization_id', organizationId)
+      .order('created_at', { ascending: false })
+      .limit(100);
+    return unwrap(res, 'listDocumentAuthenticityChecks') as Array<Record<string, unknown>>;
+  }
+
+  async listUniversalRagCollections(): Promise<Array<Record<string, unknown>>> {
+    const res = await this.client
+      .from('universal_rag_collections')
+      .select('*')
+      .order('collection_key', { ascending: true });
+    return unwrap(res, 'listUniversalRagCollections') as Array<Record<string, unknown>>;
+  }
 }

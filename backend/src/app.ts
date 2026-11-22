@@ -12,6 +12,7 @@ import { AuditService } from './core/audit/audit-service';
 import { AuthService } from './core/auth/auth-service';
 import { createAuthMiddleware } from './core/auth/middleware';
 import { MemoryDataStore } from './core/database/memory-store';
+import { SupabaseServerRuntime } from './core/database/supabase-server-client';
 import { SupabaseDataStore } from './core/database/supabase-store';
 import type { DataStore } from './core/database/types';
 import { ModuleRegistry } from './core/modules/registry';
@@ -38,8 +39,10 @@ export function createApp(overrides: AppDependencies = {}): {
   env: AppEnv;
   store: DataStore;
   moduleRegistry: ModuleRegistry;
+  supabaseRuntime: SupabaseServerRuntime;
 } {
   const env = overrides.env ?? loadEnv();
+  const supabaseRuntime = new SupabaseServerRuntime(env);
   const store: DataStore =
     overrides.store ??
     (env.DATA_STORE_MODE === 'supabase'
@@ -153,6 +156,7 @@ export function createApp(overrides: AppDependencies = {}): {
       audit,
       notifications,
       moduleRegistry,
+      supabaseRuntime,
     }),
   );
 
@@ -177,5 +181,5 @@ export function createApp(overrides: AppDependencies = {}): {
 
   app.use(errorHandler);
 
-  return { app, env, store, moduleRegistry };
+  return { app, env, store, moduleRegistry, supabaseRuntime };
 }

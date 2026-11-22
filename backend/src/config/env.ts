@@ -8,12 +8,18 @@ const envSchema = z.object({
   CORS_ORIGIN: z.string().default('http://localhost:3000'),
 
   DATA_STORE_MODE: z.enum(['supabase', 'memory']).default('memory'),
+  STORAGE_BACKEND: z.enum(['supabase', 'memory']).optional().default('memory'),
   AUTH_MODE: z.enum(['supabase', 'dev_local']).default('dev_local'),
   DEV_AUTH_SECRET: z.string().default('awaaz-local-dev-only-hmac-secret-change-me'),
 
   SUPABASE_URL: z.string().optional().default(''),
+  SUPABASE_PUBLISHABLE_KEY: z.string().optional().default(''),
   SUPABASE_ANON_KEY: z.string().optional().default(''),
+  SUPABASE_SECRET_KEY: z.string().optional().default(''),
   SUPABASE_SERVICE_ROLE_KEY: z.string().optional().default(''),
+  SUPABASE_JWKS_URL: z.string().optional().default(''),
+  DATABASE_URL: z.string().optional().default(''),
+  SUPABASE_POOLER_URL: z.string().optional().default(''),
   SUPABASE_STORAGE_BUCKET: z.string().default('awaaz-private-documents'),
 
   GEMINI_API_KEY: z.string().optional().default(''),
@@ -46,6 +52,22 @@ const envSchema = z.object({
 
 export type AppEnv = z.infer<typeof envSchema>;
 
+export function isUnmaskedSecretKey(raw: string | undefined | null): boolean {
+  const val = (raw ?? '').trim();
+  if (val.length < 18) return false;
+  if (/PASTE|PLACEHOLDER|MASKED|YOUR_|REPLACE|\*{3,}|<.*>/i.test(val)) return false;
+  return true;
+}
+
+export function getEffectiveSupabasePublishableKey(env: AppEnv): string {
+  return (env.SUPABASE_PUBLISHABLE_KEY || env.SUPABASE_ANON_KEY || '').trim();
+}
+
+export function getEffectiveSupabaseSecretKey(env: AppEnv): string {
+  const candidate = (env.SUPABASE_SECRET_KEY || env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
+  return isUnmaskedSecretKey(candidate) ? candidate : '';
+}
+
 export function loadEnv(overrides?: Record<string, string | undefined>): AppEnv {
   const parsed = envSchema.safeParse({
     ...process.env,
@@ -58,6 +80,16 @@ export function loadEnv(overrides?: Record<string, string | undefined>): AppEnv 
   }
 
   const config = parsed.data;
+  const effectivePublishable = getEffectiveSupabasePublishableKey(config);
+  const effectiveSecret = getEffectiveSupabaseSecretKey(config);
+
+  // Normalize aliases so existing modules referencing SUPABASE_ANON_KEY / SUPABASE_SERVICE_ROLE_KEY work seamlessly
+  if (!config.SUPABASE_ANON_KEY && effectivePublishable) {
+    config.SUPABASE_ANON_KEY = effectivePublishable;
+  }
+  if (!config.SUPABASE_SERVICE_ROLE_KEY && effectiveSecret) {
+    config.SUPABASE_SERVICE_ROLE_KEY = effectiveSecret;
+  }
 
   // Hard production safety guardrails
   if (config.NODE_ENV === 'production') {
@@ -67,17 +99,17 @@ export function loadEnv(overrides?: Record<string, string | undefined>): AppEnv 
     if (config.AUTH_MODE !== 'supabase') {
       throw new Error('Production requires AUTH_MODE=supabase. Local dev auth is forbidden in production.');
     }
-    if (!config.SUPABASE_URL || !config.SUPABASE_ANON_KEY || !config.SUPABASE_SERVICE_ROLE_KEY) {
-      throw new Error('Production requires SUPABASE_URL, SUPABASE_ANON_KEY, and SUPABASE_SERVICE_ROLE_KEY.');
+    if (!config.SUPABASE_URL || !effectivePublishable || !effectiveSecret) {
+      throw new Error('Production requires SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY/ANON_KEY, and unmasked SUPABASE_SECRET_KEY/SERVICE_ROLE_KEY.');
     }
   }
 
-  if (config.DATA_STORE_MODE === 'supabase' && (!config.SUPABASE_URL || !config.SUPABASE_SERVICE_ROLE_KEY)) {
-    throw new Error('DATA_STORE_MODE=supabase requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.');
+  if (config.DATA_STORE_MODE === 'supabase' && (!config.SUPABASE_URL || !effectiveSecret)) {
+    throw new Error('DATA_STORE_MODE=supabase requires SUPABASE_URL and an unmasked SUPABASE_SECRET_KEY or SUPABASE_SERVICE_ROLE_KEY.');
   }
 
-  if (config.AUTH_MODE === 'supabase' && (!config.SUPABASE_URL || !config.SUPABASE_ANON_KEY)) {
-    throw new Error('AUTH_MODE=supabase requires SUPABASE_URL and SUPABASE_ANON_KEY.');
+  if (config.AUTH_MODE === 'supabase' && (!config.SUPABASE_URL || !effectivePublishable)) {
+    throw new Error('AUTH_MODE=supabase requires SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY or SUPABASE_ANON_KEY.');
   }
 
   return config;
@@ -86,6 +118,16 @@ export function loadEnv(overrides?: Record<string, string | undefined>): AppEnv 
 export interface IntegrationStatus {
   dataStoreMode: 'supabase' | 'memory';
   authMode: 'supabase' | 'dev_local';
+  supabase: {
+    configured: boolean;
+    url: string;
+    jwksUrl: string;
+    storageBackend: 'supabase' | 'memory';
+    hasPublishableKey: boolean;
+    hasUnmaskedSecretKey: boolean;
+    hasDatabaseUrl: boolean;
+    missingKeys: string[];
+  };
   ai: {
     provider: 'gemini' | 'groq' | 'github' | 'multi';
     configured: boolean;
@@ -157,8 +199,17 @@ export function getIntegrationStatus(env: AppEnv): IntegrationStatus {
     voiceReason = 'No speech provider key configured (set GROQ_API_KEY, GEMINI_API_KEY, or LINGOSCRIBE_API_KEY). Text input fallback is active.';
   }
 
+  const effectivePublishable = getEffectiveSupabasePublishableKey(env);
+  const effectiveSecret = getEffectiveSupabaseSecretKey(env);
+  const hasSupabaseUrl = Boolean(env.SUPABASE_URL.trim());
+  const hasDatabaseUrl = Boolean((env.SUPABASE_POOLER_URL || env.DATABASE_URL || '').trim());
+  const missingKeys: string[] = [];
+  if (!hasSupabaseUrl) missingKeys.push('SUPABASE_URL');
+  if (!effectivePublishable) missingKeys.push('SUPABASE_PUBLISHABLE_KEY');
+  if (!effectiveSecret) missingKeys.push('SUPABASE_SECRET_KEY (unmasked)');
+
   const otpConfigured =
-    env.OTP_PROVIDER === 'supabase_sms' && Boolean(env.SUPABASE_URL.trim() && env.SUPABASE_ANON_KEY.trim());
+    env.OTP_PROVIDER === 'supabase_sms' && Boolean(hasSupabaseUrl && effectivePublishable);
   const devLocalPreviewEnabled = env.AUTH_MODE === 'dev_local' && env.NODE_ENV !== 'production';
   const otpReason = otpConfigured
     ? undefined
@@ -167,6 +218,18 @@ export function getIntegrationStatus(env: AppEnv): IntegrationStatus {
   return {
     dataStoreMode: env.DATA_STORE_MODE,
     authMode: env.AUTH_MODE,
+    supabase: {
+      configured: hasSupabaseUrl && Boolean(effectivePublishable),
+      url: env.SUPABASE_URL.trim(),
+      jwksUrl:
+        env.SUPABASE_JWKS_URL.trim() ||
+        (hasSupabaseUrl ? `${env.SUPABASE_URL.replace(/\/$/, '')}/auth/v1/.well-known/jwks.json` : ''),
+      storageBackend: env.STORAGE_BACKEND ?? env.DATA_STORE_MODE,
+      hasPublishableKey: Boolean(effectivePublishable),
+      hasUnmaskedSecretKey: Boolean(effectiveSecret),
+      hasDatabaseUrl,
+      missingKeys,
+    },
     ai: {
       provider: activeAiProvider,
       configured: aiConfigured,

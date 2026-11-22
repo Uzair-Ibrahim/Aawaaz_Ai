@@ -285,16 +285,25 @@ export function CitizenConsentModal({
   );
 }
 
+export interface ExtractedDocumentIdentity {
+  full_name?: string;
+  cnic?: string;
+  district?: string;
+  monthly_income?: string;
+}
+
 export function DocumentAuthenticityModal({
   open,
   onClose,
   language,
   onSendToVoiceAgent,
+  onFieldsExtracted,
 }: {
   open: boolean;
   onClose: () => void;
   language: LanguageCode;
   onSendToVoiceAgent?: (file: File) => void;
+  onFieldsExtracted?: (fields: ExtractedDocumentIdentity) => void;
 }) {
   const { token, activeOrganizationId } = useAuth();
   const [busy, setBusy] = useState(false);
@@ -312,18 +321,14 @@ export function DocumentAuthenticityModal({
     mime_type?: string;
     sample_preset?: 'valid_cnic' | 'blurry_rural_photo' | 'tampered_edited_doc';
   }) => {
-    if (!token || !activeOrganizationId) {
-      setError(isEn ? 'Please sign in first to run document authenticity verification.' : 'دستاویز کی جانچ کے لیے پہلے لاگ ان کریں۔');
-      return;
-    }
     setBusy(true);
     setError(null);
     setActionNote(null);
     try {
       const res = await apiRequest<{ analysis: DocumentAuthenticityAnalysis }>('/documents/analyze-authenticity', {
         method: 'POST',
-        token,
-        organizationId: activeOrganizationId,
+        ...(token ? { token } : {}),
+        ...(activeOrganizationId ? { organizationId: activeOrganizationId } : {}),
         body: {
           ...payload,
           doc_type: 'mock_identity_document',
@@ -331,6 +336,15 @@ export function DocumentAuthenticityModal({
         },
       });
       setResult(res.analysis);
+      const ef = res.analysis.extracted_fields ?? {};
+      if (onFieldsExtracted && (ef.full_name || ef.cnic || ef.district || ef.monthly_income)) {
+        onFieldsExtracted({
+          full_name: ef.full_name,
+          cnic: ef.cnic,
+          district: ef.district,
+          monthly_income: ef.monthly_income,
+        });
+      }
     } catch (err) {
       setError(err instanceof ApiClientError ? err.message : 'Document check failed.');
     } finally {
@@ -360,10 +374,10 @@ export function DocumentAuthenticityModal({
       className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4"
     >
       <div className="bg-white text-slate-900 rounded-2xl border border-slate-200 shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto p-6 space-y-5">
-        <div className="flex items-center justify-between border-b border-slate-200 pb-3">
+        <div className="flex items-center justify-between border-b border-blue-200 pb-3">
           <div className="flex items-center gap-2">
-            <Camera className="h-5 w-5 text-teal-700" />
-            <h3 className="text-lg font-bold">
+            <Camera className="h-5 w-5 text-blue-700" />
+            <h3 className="text-lg font-extrabold text-slate-950">
               {isEn ? 'Scan CNIC / Document Authenticity Check' : 'شناختی کارڈ / دستاویز کی تصدیق'}
             </h3>
           </div>
@@ -371,7 +385,7 @@ export function DocumentAuthenticityModal({
             type="button"
             data-testid="close-doc-modal-btn"
             onClick={onClose}
-            className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500"
+            className="p-1.5 rounded-lg hover:bg-blue-50 text-slate-500"
             aria-label="Close"
           >
             <X className="h-5 w-5" />
@@ -380,8 +394,8 @@ export function DocumentAuthenticityModal({
 
         {/* Real Upload + 3 Quick Demo Samples */}
         <div className="space-y-3">
-          <label className="w-full cursor-pointer flex items-center justify-center gap-2 p-4 rounded-xl border-2 border-dashed border-teal-400 bg-teal-50/50 hover:bg-teal-50 text-teal-900 font-bold text-sm transition">
-            <Upload className="h-4 w-4" />
+          <label className="w-full cursor-pointer flex items-center justify-center gap-2 p-4 rounded-xl border-2 border-dashed border-blue-400 bg-blue-50/60 hover:bg-blue-100/60 text-blue-950 font-extrabold text-sm transition">
+            <Upload className="h-4 w-4 text-blue-700" />
             <span>{isEn ? 'Upload Real CNIC / Income Document Image' : 'اپنی دستاویز کی تصویر اپلوڈ کریں'}</span>
             <input
               type="file"
@@ -460,6 +474,63 @@ export function DocumentAuthenticityModal({
             </div>
 
             <p className="font-semibold leading-relaxed">{result.citizen_message}</p>
+
+            {(result.extracted_fields?.full_name || result.extracted_fields?.cnic || result.extracted_fields?.district || result.extracted_fields?.monthly_income) && (
+              <div
+                data-testid="doc-extracted-fields"
+                className="p-3 rounded-xl bg-white border-2 border-teal-300 text-slate-900 space-y-2"
+              >
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <span className="text-xs font-extrabold text-teal-900 uppercase tracking-wide">
+                    {isEn ? 'Extracted CNIC / Document Details (Auto-Filled)' : 'شناختی کارڈ / دستاویز سے حاصل شدہ معلومات'}
+                  </span>
+                  <button
+                    type="button"
+                    data-testid="doc-apply-extracted-btn"
+                    onClick={() => {
+                      if (onFieldsExtracted) {
+                        onFieldsExtracted({
+                          full_name: result.extracted_fields.full_name,
+                          cnic: result.extracted_fields.cnic,
+                          district: result.extracted_fields.district,
+                          monthly_income: result.extracted_fields.monthly_income,
+                        });
+                      }
+                      onClose();
+                    }}
+                    className="px-3 py-1 rounded-lg bg-teal-700 hover:bg-teal-800 text-white text-xs font-extrabold cursor-pointer"
+                  >
+                    {isEn ? 'Use Extracted Details' : 'یہ معلومات استعمال کریں'}
+                  </button>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                  {result.extracted_fields.full_name && (
+                    <div className="p-2 rounded-lg bg-teal-50/70 border border-teal-200">
+                      <span className="text-slate-600 font-bold">{isEn ? 'Full Name:' : 'نام:'}</span>{' '}
+                      <strong data-testid="doc-extracted-name" className="text-slate-950">{result.extracted_fields.full_name}</strong>
+                    </div>
+                  )}
+                  {result.extracted_fields.cnic && (
+                    <div className="p-2 rounded-lg bg-teal-50/70 border border-teal-200">
+                      <span className="text-slate-600 font-bold">{isEn ? 'CNIC Number:' : 'شناختی کارڈ نمبر:'}</span>{' '}
+                      <strong data-testid="doc-extracted-cnic" dir="ltr" className="font-mono text-slate-950">{result.extracted_fields.cnic}</strong>
+                    </div>
+                  )}
+                  {result.extracted_fields.district && (
+                    <div className="p-2 rounded-lg bg-teal-50/70 border border-teal-200">
+                      <span className="text-slate-600 font-bold">{isEn ? 'District:' : 'ضلع:'}</span>{' '}
+                      <strong className="text-slate-950">{result.extracted_fields.district}</strong>
+                    </div>
+                  )}
+                  {result.extracted_fields.monthly_income && (
+                    <div className="p-2 rounded-lg bg-teal-50/70 border border-teal-200">
+                      <span className="text-slate-600 font-bold">{isEn ? 'Monthly Income:' : 'ماہانہ آمدنی:'}</span>{' '}
+                      <strong className="text-slate-950">{result.extracted_fields.monthly_income}</strong>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
 
             {result.tamper_indicators.length > 0 && (
               <div className="p-2.5 rounded-xl bg-white/80 border border-rose-200 text-xs space-y-1">
