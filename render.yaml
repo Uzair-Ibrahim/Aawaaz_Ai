@@ -5,7 +5,7 @@ services:
     plan: free
     region: singapore
     autoDeploy: true
-    buildCommand: npm install && npm run build:shared && npm run build:backend
+    buildCommand: npm install --include=dev && npm run build:shared && npm run build:backend
     startCommand: npm run start --workspace=@awaaz/backend
     healthCheckPath: /api/v1/health
     envVars:

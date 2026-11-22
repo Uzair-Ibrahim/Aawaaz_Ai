@@ -8,7 +8,7 @@
     "mcp:stdio": "tsx src/mcp/stdio.ts",
     "db:migrate": "tsx scripts/push-supabase-migrations.ts",
     "db:seed": "tsx scripts/seed-supabase.ts",
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.build.json",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run"
@@ -23,6 +23,14 @@
     "@modelcontextprotocol/sdk": "^1.32.2",
     "@supabase/server": "^1.9.2",
     "@supabase/supabase-js": "^2.119.2",
+    "@types/cookie-parser": "^1.4.8",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.1",
+    "@types/js-yaml": "^4.0.9",
+    "@types/multer": "^1.4.12",
+    "@types/node": "^22.13.10",
+    "@types/pg": "^8.23.1",
+    "@types/swagger-ui-express": "^4.1.8",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
@@ -33,21 +41,13 @@
     "multer": "^1.4.5-lts.2",
     "pg": "^8.23.1",
     "swagger-ui-express": "^5.0.1",
+    "typescript": "^5.8.2",
     "zod": "^3.24.2"
   },
   "devDependencies": {
-    "@types/cookie-parser": "^1.4.8",
-    "@types/cors": "^2.8.17",
-    "@types/express": "^5.0.1",
-    "@types/js-yaml": "^4.0.9",
-    "@types/multer": "^1.4.12",
-    "@types/node": "^22.13.10",
-    "@types/pg": "^8.23.1",
     "@types/supertest": "^6.0.2",
-    "@types/swagger-ui-express": "^4.1.8",
     "supertest": "^7.0.0",
     "tsx": "^4.19.3",
-    "typescript": "^5.8.2",
     "vitest": "^3.0.9"
   }
 }

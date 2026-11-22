@@ -82,7 +82,7 @@ export class AmaanatMcpClient {
 
       const contentArr = Array.isArray(rpcRes.content) ? rpcRes.content : [];
       const firstText = contentArr.find(
-        (c): c is { type: 'text'; text: string } =>
+        (c: unknown): c is { type: 'text'; text: string } =>
           typeof c === 'object' && c !== null && (c as { type?: string }).type === 'text',
       )?.text;
 
