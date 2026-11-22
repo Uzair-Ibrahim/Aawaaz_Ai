@@ -1,0 +1,27 @@
+{
+  "name": "awaaz-saas",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Awaaz — AI-powered multilingual multi-user SaaS platform (separate frontend and backend workspaces)",
+  "workspaces": [
+    "shared",
+    "backend",
+    "frontend"
+  ],
+  "scripts": {
+    "dev:backend": "npm run dev --workspace=@awaaz/backend",
+    "dev:frontend": "npm run dev --workspace=@awaaz/frontend",
+    "dev": "concurrently -n API,WEB -c cyan,green \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "build:shared": "npm run build --workspace=@awaaz/shared",
+    "build:backend": "npm run build --workspace=@awaaz/backend",
+    "build:frontend": "npm run build --workspace=@awaaz/frontend",
+    "build": "npm run build:shared && npm run build:backend && npm run build:frontend",
+    "typecheck": "npm run typecheck --workspace=@awaaz/shared && npm run typecheck --workspace=@awaaz/backend && npm run typecheck --workspace=@awaaz/frontend",
+    "lint": "npm run lint --workspace=@awaaz/frontend",
+    "test": "npm run test --workspace=@awaaz/backend"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "playwright-core": "^1.65.1"
+  }
+}

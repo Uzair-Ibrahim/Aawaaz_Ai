@@ -1,0 +1,55 @@
+@import "tailwindcss";
+
+@layer base {
+  html {
+    font-family: var(--font-latin), system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Urdu & Shahmukhi Punjabi: Nastaliq with generous vertical breathing room */
+  html[lang="ur"],
+  html[lang="pa"] {
+    font-family: var(--font-nastaliq), "Jameel Noori Nastaleeq", var(--font-naskh), var(--font-arabic-ui), sans-serif;
+    line-height: 2.05;
+  }
+
+  html[lang="ur"] button,
+  html[lang="ur"] input,
+  html[lang="ur"] select,
+  html[lang="ur"] textarea,
+  html[lang="pa"] button,
+  html[lang="pa"] input,
+  html[lang="pa"] select,
+  html[lang="pa"] textarea {
+    line-height: 1.85;
+  }
+
+  /* Sindhi, Pashto & Balochi: crisp Naskh / Arabic UI font that renders all language-specific glyphs cleanly */
+  html[lang="sd"],
+  html[lang="ps"],
+  html[lang="bal"],
+  .script-naskh {
+    font-family: var(--font-naskh), var(--font-arabic-ui), "Nafees Web Naskh", "Tahoma", sans-serif;
+    line-height: 1.85;
+  }
+
+  .script-nastaliq {
+    font-family: var(--font-nastaliq), "Jameel Noori Nastaleeq", var(--font-naskh), var(--font-arabic-ui), sans-serif;
+    line-height: 2.05;
+  }
+
+  html[dir="rtl"] body {
+    text-align: start;
+  }
+
+  html[dir="rtl"] input,
+  html[dir="rtl"] textarea,
+  html[dir="rtl"] select {
+    text-align: start;
+  }
+
+  body {
+    background-color: #f8fafc;
+    color: #0f172a;
+  }
+}

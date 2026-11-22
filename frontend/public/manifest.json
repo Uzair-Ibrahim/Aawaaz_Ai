@@ -1,0 +1,9 @@
+{
+  "name": "Awaaz — Multilingual Public-Service SaaS",
+  "short_name": "Awaaz",
+  "description": "AI-powered multilingual voice-first relief-assistance prototype (synthetic data only).",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f8fafc",
+  "theme_color": "#0f766e"
+}

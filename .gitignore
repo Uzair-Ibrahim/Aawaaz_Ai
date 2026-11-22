@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build outputs
+.next/
+out/
+dist/
+build/
+*.tsbuildinfo
+
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+
+# Local dev private uploads
+backend/.local-storage/
+
+# Logs & test artifacts
+*.log
+npm-debug.log*
+coverage/
+playwright-report/
+test-results/
+
+# OS & editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
